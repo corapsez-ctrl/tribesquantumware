@@ -30,37 +30,40 @@ local modules = {
 	aimbot = {
 		page = "Blatant",
 		name = "Aimbot",
-		desc = "Snap the camera onto the closest enemy in the circle",
+		desc = "Puts the crosshair on an enemy and leads the shot",
 		key = Enum.KeyCode.Q,
 		enabled = false,
-		fov = 180,
+		fov = 280,
+		min = 40,
+		max = 700,
+		step = 20,
 	},
 	speed = {
 		page = "Blatant",
 		name = "Speed",
-		desc = "Raise walk speed while this is on",
+		desc = "Pushes you faster. This game ignores normal walk speed",
 		key = Enum.KeyCode.C,
 		enabled = false,
-		value = 28,
-		min = 18,
-		max = 80,
+		value = 46,
+		min = 20,
+		max = 120,
 		step = 2,
 	},
 	jump = {
 		page = "Blatant",
 		name = "High Jump",
-		desc = "Jump higher while this is on",
+		desc = "Boosts the jump itself, not just the default jump stat",
 		key = Enum.KeyCode.Z,
 		enabled = false,
-		value = 70,
-		min = 50,
-		max = 140,
+		value = 95,
+		min = 60,
+		max = 180,
 		step = 5,
 	},
 	smooth = {
 		page = "Closet",
 		name = "Smooth Aim",
-		desc = "Ease onto an enemy while the key is held",
+		desc = "Eases the crosshair onto an enemy while held",
 		key = Enum.KeyCode.E,
 		hold = true,
 		enabled = false,
@@ -114,35 +117,99 @@ local state = {
 	savedSpeed = nil,
 	savedJumpPower = nil,
 	savedJumpHeight = nil,
+	savedCameraType = nil,
+	jumpUntil = 0,
 }
 
 local visuals = {}
+local characters = {}
 local tracerFrames = {}
+local ARROW_SPEED = 230
 local connections = {}
 local dragging = false
 local dragStart
 local dragOrigin
 
-local function teamKey(player)
-	if player.Neutral or player.Team == nil then
+local function readableTeam(value)
+	if value == nil then
 		return nil
 	end
-	return string.lower(player.Team.Name)
+	local text = string.lower(tostring(value))
+	if text == "" or LOBBY_TEAMS[text] then
+		return nil
+	end
+	return text
 end
 
-local function isLobby(player)
-	local key = teamKey(player)
-	return key == nil or LOBBY_TEAMS[key] == true
+local function teamToken(player)
+	if player.Team ~= nil and not player.Neutral then
+		local name = readableTeam(player.Team.Name)
+		if name then
+			return name
+		end
+	end
+
+	local sources = { player, player.Character, characters[player] }
+	for _, inst in sources do
+		if inst == nil then
+			continue
+		end
+		for attr, value in inst:GetAttributes() do
+			local key = string.lower(attr)
+			if string.find(key, "team", 1, true) or key == "side" or key == "squad" or key == "tribe" then
+				local token = readableTeam(value)
+				if token then
+					return token
+				end
+			end
+		end
+		for _, child in inst:GetChildren() do
+			if child:IsA("ValueBase") then
+				local key = string.lower(child.Name)
+				if string.find(key, "team", 1, true) or key == "side" or key == "squad" then
+					local token = readableTeam(child.Value)
+					if token then
+						return token
+					end
+				end
+			end
+		end
+	end
+	return nil
 end
 
 local function sideOf(player)
-	if player == localPlayer or isLobby(player) or isLobby(localPlayer) then
+	if player == localPlayer or player.Parent == nil then
 		return nil
 	end
-	if player.Team == localPlayer.Team then
-		return "ally"
+	local mine = teamToken(localPlayer)
+	local theirs = teamToken(player)
+	if mine ~= nil and theirs ~= nil then
+		return if mine == theirs then "ally" else "enemy"
 	end
+	-- Tribes keeps sides on its own scoreboard, not on Roblox teams.
 	return "enemy"
+end
+
+local function characterOf(player)
+	if player.Character ~= nil and player.Character.Parent ~= nil then
+		return player.Character
+	end
+	local cached = characters[player]
+	if cached ~= nil and cached.Parent ~= nil then
+		return cached
+	end
+	return nil
+end
+
+local function aimPartOf(character)
+	if character == nil then
+		return nil
+	end
+	return character:FindFirstChild("Head")
+		or character:FindFirstChild("UpperTorso")
+		or character:FindFirstChild("Torso")
+		or character:FindFirstChild("HumanoidRootPart")
 end
 
 local function guiParent()
@@ -200,6 +267,10 @@ fovStroke.Parent = fovCircle
 local tracerFolder = Instance.new("Folder")
 tracerFolder.Name = "Tracers"
 tracerFolder.Parent = gui
+
+local espFolder = Instance.new("Folder")
+espFolder.Name = "ESP"
+espFolder.Parent = gui
 
 local holder = Instance.new("Frame")
 holder.Name = "Menu"
@@ -503,8 +574,8 @@ local function attach(player, character)
 		return
 	end
 
-	local head = character:WaitForChild("Head", 10)
-	local humanoid = character:WaitForChild("Humanoid", 10)
+	local head = aimPartOf(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if head == nil or humanoid == nil or player.Parent == nil or character.Parent == nil then
 		return
 	end
@@ -523,7 +594,7 @@ local function attach(player, character)
 	highlight.FillTransparency = if side == "ally" then 0.75 else 0.45
 	highlight.OutlineTransparency = 0
 	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = character
+	highlight.Parent = espFolder
 
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "QuantumESPName"
@@ -532,7 +603,7 @@ local function attach(player, character)
 	billboard.Size = UDim2.fromOffset(200, 36)
 	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
 	billboard.LightInfluence = 0
-	billboard.Parent = head
+	billboard.Parent = espFolder
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.BackgroundTransparency = 1
@@ -544,11 +615,13 @@ local function attach(player, character)
 	nameLabel.Text = player.DisplayName
 	nameLabel.Parent = billboard
 
+	characters[player] = character
 	visuals[player] = {
 		highlight = highlight,
 		billboard = billboard,
 		label = nameLabel,
 		humanoid = humanoid,
+		character = character,
 	}
 
 	character.Destroying:Connect(function()
@@ -566,8 +639,9 @@ local function refreshEsp()
 		return
 	end
 	for _, player in Players:GetPlayers() do
-		if player ~= localPlayer and player.Character ~= nil then
-			task.spawn(attach, player, player.Character)
+		local character = characterOf(player)
+		if player ~= localPlayer and character ~= nil then
+			task.spawn(attach, player, character)
 		end
 	end
 end
@@ -607,46 +681,92 @@ local function currentFov()
 	return fov
 end
 
-local function closestEnemy(camera, fov)
+local function predictedPoint(camera, part)
+	local root = part.Parent and part.Parent:FindFirstChild("HumanoidRootPart") or part
+	local velocity = root.AssemblyLinearVelocity
+	local distance = (part.Position - camera.CFrame.Position).Magnitude
+	local flight = math.clamp(distance / ARROW_SPEED, 0, 1.25)
+	local lead = Vector3.new(velocity.X, velocity.Y * 0.25, velocity.Z) * flight
+	local drop = Vector3.new(0, 28 * flight * flight, 0)
+	return part.Position + lead + drop
+end
+
+local function closestEnemy(camera, fov, lockOffscreen)
 	local center = camera.ViewportSize / 2
 	local bestPart = nil
-	local bestDistance = fov
+	local bestScore = math.huge
+	local fallback = nil
+	local fallbackDistance = math.huge
 	for _, player in Players:GetPlayers() do
 		if sideOf(player) ~= "enemy" then
 			continue
 		end
-		local character = player.Character
-		local head = character and character:FindFirstChild("Head")
+		local character = characterOf(player)
+		local part = aimPartOf(character)
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		if head == nil or humanoid == nil or humanoid.Health <= 0 then
+		if part == nil or humanoid == nil or humanoid.Health <= 0 then
 			continue
 		end
-		local point, onScreen = camera:WorldToViewportPoint(head.Position)
+		local studs = (part.Position - camera.CFrame.Position).Magnitude
+		if studs > 500 then
+			continue
+		end
+		if studs < fallbackDistance then
+			fallbackDistance = studs
+			fallback = part
+		end
+		local point, onScreen = camera:WorldToViewportPoint(part.Position)
 		if not onScreen or point.Z <= 0 then
 			continue
 		end
-		local distance = (Vector2.new(point.X, point.Y) - center).Magnitude
-		if distance <= bestDistance then
-			bestDistance = distance
-			bestPart = head
+		local pixels = (Vector2.new(point.X, point.Y) - center).Magnitude
+		if pixels <= fov and pixels < bestScore then
+			bestScore = pixels
+			bestPart = part
 		end
+	end
+	if bestPart == nil and lockOffscreen then
+		return fallback
 	end
 	return bestPart
 end
 
 local function aimAt(camera, part, alpha)
-	local goal = CFrame.lookAt(camera.CFrame.Position, part.Position)
+	local goal = CFrame.lookAt(camera.CFrame.Position, predictedPoint(camera, part))
 	if alpha >= 1 then
 		camera.CFrame = goal
 	else
 		camera.CFrame = camera.CFrame:Lerp(goal, alpha)
+	end
+
+	local root = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if root ~= nil then
+		local flat = Vector3.new(part.Position.X, root.Position.Y, part.Position.Z)
+		if (flat - root.Position).Magnitude > 0.2 then
+			root.CFrame = CFrame.lookAt(root.Position, flat)
+		end
+	end
+end
+
+local function restoreCamera(camera)
+	if state.savedCameraType ~= nil then
+		camera.CameraType = state.savedCameraType
+		state.savedCameraType = nil
+	end
+end
+
+local function ownCamera(camera)
+	if camera.CameraType ~= Enum.CameraType.Scriptable then
+		state.savedCameraType = camera.CameraType
+		camera.CameraType = Enum.CameraType.Scriptable
 	end
 end
 
 local function applyMovement()
 	local character = localPlayer.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if humanoid == nil then
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if humanoid == nil or root == nil then
 		return
 	end
 
@@ -655,6 +775,19 @@ local function applyMovement()
 			state.savedSpeed = humanoid.WalkSpeed
 		end
 		humanoid.WalkSpeed = modules.speed.value
+		local move = humanoid.MoveDirection
+		local flat = Vector3.new(move.X, 0, move.Z)
+		if flat.Magnitude > 0.05 then
+			local push = flat.Unit * modules.speed.value
+			local velocity = root.AssemblyLinearVelocity
+			root.AssemblyLinearVelocity = Vector3.new(push.X, velocity.Y, push.Z)
+			for _, child in character:GetDescendants() do
+				if child:IsA("LinearVelocity") then
+					local current = child.VectorVelocity
+					child.VectorVelocity = Vector3.new(push.X, current.Y, push.Z)
+				end
+			end
+		end
 	elseif state.savedSpeed ~= nil then
 		humanoid.WalkSpeed = state.savedSpeed
 		state.savedSpeed = nil
@@ -665,10 +798,13 @@ local function applyMovement()
 			state.savedJumpPower = humanoid.JumpPower
 			state.savedJumpHeight = humanoid.JumpHeight
 		end
-		if humanoid.UseJumpPower then
-			humanoid.JumpPower = modules.jump.value
-		else
-			humanoid.JumpHeight = math.max(7.2, modules.jump.value / 5)
+		humanoid.JumpPower = modules.jump.value
+		humanoid.JumpHeight = modules.jump.value * 0.45
+		if os.clock() < state.jumpUntil then
+			local velocity = root.AssemblyLinearVelocity
+			if velocity.Y < modules.jump.value then
+				root.AssemblyLinearVelocity = Vector3.new(velocity.X, modules.jump.value, velocity.Z)
+			end
 		end
 	elseif state.savedJumpPower ~= nil then
 		humanoid.JumpPower = state.savedJumpPower
@@ -686,7 +822,7 @@ local function updateEsp(camera)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	for player, visual in visuals do
 		local side = wantedSide(player)
-		local theirCharacter = player.Character
+		local theirCharacter = visual.character or characterOf(player)
 		local theirRoot = theirCharacter and theirCharacter:FindFirstChild("HumanoidRootPart")
 		local humanoid = visual.humanoid
 		local alive = side ~= nil and humanoid ~= nil and humanoid.Parent ~= nil and humanoid.Health > 0
@@ -718,8 +854,8 @@ local function updateTracers(camera)
 			if sideOf(player) ~= "enemy" then
 				continue
 			end
-			local character = player.Character
-			local root = character and character:FindFirstChild("HumanoidRootPart")
+			local character = characterOf(player)
+			local root = character and (character:FindFirstChild("HumanoidRootPart") or aimPartOf(character))
 			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 			if root == nil or humanoid == nil or humanoid.Health <= 0 then
 				continue
@@ -759,18 +895,26 @@ local function onStep()
 
 	applyMovement()
 
+	local aiming = false
 	if not state.menuOpen then
 		if modules.aimbot.enabled then
-			local target = closestEnemy(camera, modules.aimbot.fov)
+			local target = closestEnemy(camera, modules.aimbot.fov, true)
 			if target then
+				aiming = true
+				ownCamera(camera)
 				aimAt(camera, target, 1)
 			end
 		elseif modules.smooth.enabled and state.holding[modules.smooth.key] then
-			local target = closestEnemy(camera, modules.smooth.fov)
+			local target = closestEnemy(camera, modules.smooth.fov, false)
 			if target then
-				aimAt(camera, target, 0.15)
+				aiming = true
+				ownCamera(camera)
+				aimAt(camera, target, 0.22)
 			end
 		end
+	end
+	if not aiming then
+		restoreCamera(camera)
 	end
 
 	local fov = currentFov()
@@ -897,5 +1041,46 @@ for _, player in Players:GetPlayers() do
 	watch(player)
 end
 
+local function rememberCharacter(model)
+	if not model:IsA("Model") then
+		return
+	end
+	if model:FindFirstChildOfClass("Humanoid") == nil then
+		return
+	end
+	local player = Players:GetPlayerFromCharacter(model) or Players:FindFirstChild(model.Name)
+	if player == nil or player == localPlayer then
+		return
+	end
+	characters[player] = model
+	if modules.esp.enabled then
+		task.spawn(attach, player, model)
+	end
+end
+
+table.insert(connections, UserInputService.JumpRequest:Connect(function()
+	if modules.jump.enabled then
+		state.jumpUntil = os.clock() + 0.3
+	end
+end))
+
+table.insert(connections, workspace.DescendantAdded:Connect(function(inst)
+	if inst:IsA("Model") then
+		task.defer(rememberCharacter, inst)
+	elseif inst:IsA("Humanoid") and inst.Parent ~= nil then
+		task.defer(rememberCharacter, inst.Parent)
+	end
+end))
+
+for _, inst in workspace:GetDescendants() do
+	if inst:IsA("Humanoid") and inst.Parent ~= nil then
+		rememberCharacter(inst.Parent)
+	end
+end
+
 renderPage()
-RunService:BindToRenderStep("QuantumWare", Enum.RenderPriority.Camera.Value + 1, onStep)
+RunService:BindToRenderStep("QuantumWare", Enum.RenderPriority.Last.Value, onStep)
+table.insert(connections, RunService.Heartbeat:Connect(onStep))
+pcall(function()
+	table.insert(connections, RunService.PreSimulation:Connect(applyMovement))
+end)
