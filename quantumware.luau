@@ -687,7 +687,7 @@ local function renderPage()
 	elseif typeof(state.binding) == "table" then
 		bindHint.Text = "Press a key for " .. state.binding.name
 	else
-		bindHint.Text = "Right click a module for its settings"
+		bindHint.Text = "Click a module name to open its settings"
 	end
 
 	for _, child in pageColumn:GetChildren() do
@@ -818,9 +818,6 @@ local function renderPage()
 		row.Parent = content
 		corner(row, 12)
 
-		label(row, module.name, UDim2.fromOffset(200, 24), Color3.new(1, 1, 1), 15).Position = UDim2.fromOffset(14, 8)
-		label(row, module.desc, UDim2.fromOffset(250, 18), MUTED, 12).Position = UDim2.fromOffset(14, 32)
-
 		local function toggleSettings()
 			if module.options == nil or state.settingsClick == id then
 				return
@@ -833,11 +830,45 @@ local function renderPage()
 			renderPage()
 		end
 
-		row.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton2 then
-				toggleSettings()
-			end
-		end)
+		local nameButton = Instance.new("TextButton")
+		nameButton.BackgroundTransparency = 1
+		nameButton.Position = UDim2.fromOffset(14, 8)
+		nameButton.Size = UDim2.fromOffset(190, 24)
+		nameButton.Font = Enum.Font.GothamBold
+		nameButton.TextSize = 15
+		nameButton.TextXAlignment = Enum.TextXAlignment.Left
+		nameButton.TextColor3 = if opened then PURPLE else Color3.new(1, 1, 1)
+		nameButton.Text = module.name
+		nameButton.ZIndex = 3
+		nameButton.Parent = row
+		if module.options ~= nil then
+			nameButton.MouseButton1Click:Connect(toggleSettings)
+			nameButton.MouseButton2Click:Connect(toggleSettings)
+		end
+		label(row, module.desc, UDim2.fromOffset(190, 18), MUTED, 12).Position = UDim2.fromOffset(14, 32)
+
+		if module.options ~= nil then
+			local settingsButton = Instance.new("TextButton")
+			settingsButton.AnchorPoint = Vector2.new(1, 0)
+			settingsButton.Position = UDim2.new(1, -154, 0, 19)
+			settingsButton.Size = UDim2.fromOffset(78, 26)
+			settingsButton.BackgroundColor3 = if opened then PURPLE else BLACK
+			settingsButton.BorderSizePixel = 0
+			settingsButton.AutoButtonColor = false
+			settingsButton.Font = Enum.Font.GothamBold
+			settingsButton.TextSize = 12
+			settingsButton.TextColor3 = if opened then Color3.new(1, 1, 1) else PURPLE
+			settingsButton.Text = "Settings"
+			settingsButton.ZIndex = 3
+			settingsButton.Parent = row
+			corner(settingsButton, 8)
+			local settingsStroke = Instance.new("UIStroke")
+			settingsStroke.Color = PURPLE
+			settingsStroke.Transparency = if opened then 1 else 0.45
+			settingsStroke.Parent = settingsButton
+			settingsButton.MouseButton1Click:Connect(toggleSettings)
+			settingsButton.MouseButton2Click:Connect(toggleSettings)
+		end
 
 		local toggle = Instance.new("TextButton")
 		toggle.AnchorPoint = Vector2.new(1, 0)
@@ -847,6 +878,7 @@ local function renderPage()
 		toggle.BorderSizePixel = 0
 		toggle.AutoButtonColor = false
 		toggle.Text = ""
+		toggle.ZIndex = 3
 		toggle.Parent = row
 		corner(toggle, 12)
 		local knob = Instance.new("Frame")
@@ -878,6 +910,7 @@ local function renderPage()
 		keyButton.TextSize = 12
 		keyButton.TextColor3 = PURPLE
 		keyButton.Text = if state.binding == module then "Press" else module.key.Name
+		keyButton.ZIndex = 3
 		keyButton.Parent = row
 		corner(keyButton, 8)
 		local keyStroke = Instance.new("UIStroke")
