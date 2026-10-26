@@ -42,6 +42,13 @@ local modules = {
 		min = 40,
 		max = 700,
 		step = 20,
+		showCircle = true,
+		circleColor = PURPLE,
+		options = {
+			{ field = "fov", name = "FOV", kind = "number" },
+			{ field = "showCircle", name = "FOV circle", kind = "bool" },
+			{ field = "circleColor", name = "Circle colour", kind = "color" },
+		},
 	},
 	speed = {
 		page = "Blatant",
@@ -53,6 +60,9 @@ local modules = {
 		min = 20,
 		max = 120,
 		step = 2,
+		options = {
+			{ field = "value", name = "Speed", kind = "number" },
+		},
 	},
 	jump = {
 		page = "Blatant",
@@ -64,6 +74,9 @@ local modules = {
 		min = 60,
 		max = 180,
 		step = 5,
+		options = {
+			{ field = "value", name = "Height", kind = "number" },
+		},
 	},
 	killaura = {
 		page = "Blatant",
@@ -75,6 +88,9 @@ local modules = {
 		min = 12,
 		max = 80,
 		step = 2,
+		options = {
+			{ field = "value", name = "Reach", kind = "number" },
+		},
 	},
 	silent = {
 		page = "Blatant",
@@ -86,6 +102,13 @@ local modules = {
 		min = 40,
 		max = 600,
 		step = 20,
+		showCircle = true,
+		circleColor = PURPLE,
+		options = {
+			{ field = "fov", name = "FOV", kind = "number" },
+			{ field = "showCircle", name = "FOV circle", kind = "bool" },
+			{ field = "circleColor", name = "Circle colour", kind = "color" },
+		},
 	},
 	fly = {
 		page = "Blatant",
@@ -97,6 +120,9 @@ local modules = {
 		min = 20,
 		max = 160,
 		step = 5,
+		options = {
+			{ field = "value", name = "Speed", kind = "number" },
+		},
 	},
 	smooth = {
 		page = "Closet",
@@ -109,6 +135,13 @@ local modules = {
 		min = 30,
 		max = 320,
 		step = 10,
+		showCircle = true,
+		circleColor = PURPLE,
+		options = {
+			{ field = "fov", name = "FOV", kind = "number" },
+			{ field = "showCircle", name = "FOV circle", kind = "bool" },
+			{ field = "circleColor", name = "Circle colour", kind = "color" },
+		},
 	},
 	esp = {
 		page = "Visuals",
@@ -141,9 +174,17 @@ local modules = {
 	rage = {
 		page = "Rage",
 		name = "Underkill",
-		desc = "Teleports under an enemy and swings your sword",
+		desc = "Hides in the sky, then strikes with the weapon you pick",
 		key = Enum.KeyCode.V,
 		enabled = false,
+		hide = 0.45,
+		attack = 0.08,
+		method = "Sword",
+		options = {
+			{ field = "hide", name = "Hide", kind = "number", min = 0.01, max = 1, step = 0.01 },
+			{ field = "attack", name = "Attack", kind = "number", min = 0.01, max = 1, step = 0.01 },
+			{ field = "method", name = "Method", kind = "choice", choices = { "Sword", "Dagger", "Hammer", "Ranged" } },
+		},
 	},
 }
 
@@ -172,6 +213,13 @@ local state = {
 	silentTarget = nil,
 	internalRay = false,
 	wasFlying = false,
+	openModule = nil,
+	rageActive = false,
+	ragePhase = "hide",
+	rageUntil = 0,
+	rageSwung = false,
+	rageTarget = nil,
+	rageReturn = nil,
 }
 
 local visuals = {}
@@ -472,21 +520,34 @@ local function notify(module)
 	end)
 end
 
-local fovCircle = Instance.new("Frame")
-fovCircle.Name = "Fov"
-fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-fovCircle.Position = UDim2.fromScale(0.5, 0.5)
-fovCircle.BackgroundTransparency = 1
-fovCircle.Visible = false
-fovCircle.Parent = gui
-local fovCorner = Instance.new("UICorner")
-fovCorner.CornerRadius = UDim.new(1, 0)
-fovCorner.Parent = fovCircle
-local fovStroke = Instance.new("UIStroke")
-fovStroke.Color = PURPLE
-fovStroke.Thickness = 1.5
-fovStroke.Transparency = 0.25
-fovStroke.Parent = fovCircle
+local CIRCLE_COLORS = {
+	PURPLE,
+	Color3.fromRGB(255, 255, 255),
+	Color3.fromRGB(255, 70, 70),
+	Color3.fromRGB(70, 150, 255),
+	Color3.fromRGB(80, 255, 140),
+	Color3.fromRGB(255, 210, 60),
+}
+
+local fovCircles = {}
+for _, id in { "aimbot", "silent", "smooth" } do
+	local frame = Instance.new("Frame")
+	frame.Name = "Fov" .. id
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.BackgroundTransparency = 1
+	frame.Visible = false
+	frame.Parent = gui
+	local frameCorner = Instance.new("UICorner")
+	frameCorner.CornerRadius = UDim.new(1, 0)
+	frameCorner.Parent = frame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = PURPLE
+	stroke.Thickness = 1.5
+	stroke.Transparency = 0.25
+	stroke.Parent = frame
+	fovCircles[id] = stroke
+end
 
 local tracerFolder = Instance.new("Folder")
 tracerFolder.Name = "Tracers"
@@ -566,15 +627,36 @@ local pageLayout = Instance.new("UIListLayout")
 pageLayout.Padding = UDim.new(0, 6)
 pageLayout.Parent = pageColumn
 
-local content = Instance.new("Frame")
+local content = Instance.new("ScrollingFrame")
 content.Name = "Pages"
 content.BackgroundTransparency = 1
+content.BorderSizePixel = 0
 content.Position = UDim2.fromOffset(176, 54)
 content.Size = UDim2.fromOffset(464, 348)
+content.Active = true
+content.ScrollingEnabled = true
+content.ScrollBarThickness = 8
+content.ScrollBarImageColor3 = PURPLE
+content.AutomaticCanvasSize = Enum.AutomaticSize.None
+content.CanvasSize = UDim2.fromOffset(0, 0)
+content.ScrollingDirection = Enum.ScrollingDirection.Y
 content.Parent = panel
 local contentLayout = Instance.new("UIListLayout")
 contentLayout.Padding = UDim.new(0, 8)
+contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 contentLayout.Parent = content
+local contentPad = Instance.new("UIPadding")
+contentPad.PaddingBottom = UDim.new(0, 16)
+contentPad.Parent = content
+
+local function refreshCanvas()
+	local height = contentLayout.AbsoluteContentSize.Y
+	if height > 0 then
+		content.CanvasSize = UDim2.fromOffset(0, height + 16)
+	end
+end
+
+contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshCanvas)
 
 local function corner(parent, radius)
 	local item = Instance.new("UICorner")
@@ -605,7 +687,7 @@ local function renderPage()
 	elseif typeof(state.binding) == "table" then
 		bindHint.Text = "Press a key for " .. state.binding.name
 	else
-		bindHint.Text = "Click a key chip, then press a new key"
+		bindHint.Text = "Right click a module for its settings"
 	end
 
 	for _, child in pageColumn:GetChildren() do
@@ -636,6 +718,7 @@ local function renderPage()
 		button.MouseButton1Click:Connect(function()
 			state.page = pageName
 			state.binding = nil
+			content.CanvasPosition = Vector2.zero
 			renderPage()
 		end)
 	end
@@ -725,20 +808,40 @@ local function renderPage()
 
 	for _, id in pageOrder[state.page] do
 		local module = modules[id]
-		local hasAmount = module.fov ~= nil or module.value ~= nil
+		local opened = state.openModule == id and module.options ~= nil
+		local optionCount = if opened then #module.options else 0
 		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, 0, 0, if hasAmount then 78 else 64)
+		row.Size = UDim2.new(1, 0, 0, 64 + optionCount * 32)
 		row.BackgroundColor3 = ROW
 		row.BorderSizePixel = 0
+		row.Active = true
 		row.Parent = content
 		corner(row, 12)
 
 		label(row, module.name, UDim2.fromOffset(200, 24), Color3.new(1, 1, 1), 15).Position = UDim2.fromOffset(14, 8)
 		label(row, module.desc, UDim2.fromOffset(250, 18), MUTED, 12).Position = UDim2.fromOffset(14, 32)
 
+		local function toggleSettings()
+			if module.options == nil or state.settingsClick == id then
+				return
+			end
+			state.settingsClick = id
+			task.defer(function()
+				state.settingsClick = nil
+			end)
+			state.openModule = if state.openModule == id then nil else id
+			renderPage()
+		end
+
+		row.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton2 then
+				toggleSettings()
+			end
+		end)
+
 		local toggle = Instance.new("TextButton")
-		toggle.AnchorPoint = Vector2.new(1, 0.5)
-		toggle.Position = UDim2.new(1, -14, 0.5, 0)
+		toggle.AnchorPoint = Vector2.new(1, 0)
+		toggle.Position = UDim2.new(1, -14, 0, 20)
 		toggle.Size = UDim2.fromOffset(44, 24)
 		toggle.BackgroundColor3 = if module.enabled then PURPLE else Color3.fromRGB(40, 40, 46)
 		toggle.BorderSizePixel = 0
@@ -762,10 +865,11 @@ local function renderPage()
 			saveSettings()
 			renderPage()
 		end)
+		toggle.MouseButton2Click:Connect(toggleSettings)
 
 		local keyButton = Instance.new("TextButton")
-		keyButton.AnchorPoint = Vector2.new(1, 0.5)
-		keyButton.Position = UDim2.new(1, -68, 0.5, 0)
+		keyButton.AnchorPoint = Vector2.new(1, 0)
+		keyButton.Position = UDim2.new(1, -68, 0, 19)
 		keyButton.Size = UDim2.fromOffset(78, 26)
 		keyButton.BackgroundColor3 = BLACK
 		keyButton.BorderSizePixel = 0
@@ -784,50 +888,127 @@ local function renderPage()
 			state.binding = module
 			renderPage()
 		end)
+		keyButton.MouseButton2Click:Connect(toggleSettings)
 
-		if hasAmount then
-			local amount = module.fov or module.value
-			local caption = if module.fov then "FOV" else "Value"
+		if opened then
+			for index, option in module.options do
+				local y = 58 + (index - 1) * 32
+				label(row, option.name, UDim2.fromOffset(110, 22), MUTED, 12).Position = UDim2.fromOffset(14, y)
 
-			local function bump(direction)
-				local step = module.step or 10
-				local minValue = module.min or 20
-				local maxValue = module.max or 400
-				local nextValue = math.clamp((module.fov or module.value) + step * direction, minValue, maxValue)
-				if module.fov then
-					module.fov = nextValue
-				else
-					module.value = nextValue
+				if option.kind == "number" then
+					local step = option.step or module.step or 1
+					local minValue = option.min or module.min or 0
+					local maxValue = option.max or module.max or 100
+					local valueLabel = label(row, "", UDim2.fromOffset(52, 22), PURPLE, 12, Enum.TextXAlignment.Center)
+					valueLabel.Position = UDim2.fromOffset(150, y)
+
+					local function showValue()
+						local amount = module[option.field]
+						if step < 1 then
+							valueLabel.Text = string.format("%.2f", amount) .. "s"
+						else
+							valueLabel.Text = tostring(math.floor(amount + 0.5))
+						end
+					end
+
+					local function bump(direction)
+						local snapped = math.floor((module[option.field] + step * direction) / step + 0.5) * step
+						module[option.field] = math.clamp(snapped, minValue, maxValue)
+						showValue()
+						saveSettings()
+					end
+
+					local function smallButton(text, x, direction)
+						local button = Instance.new("TextButton")
+						button.Position = UDim2.fromOffset(x, y)
+						button.Size = UDim2.fromOffset(22, 22)
+						button.BackgroundColor3 = BLACK
+						button.BorderSizePixel = 0
+						button.AutoButtonColor = false
+						button.Font = Enum.Font.GothamBold
+						button.TextSize = 14
+						button.TextColor3 = PURPLE
+						button.Text = text
+						button.Parent = row
+						corner(button, 4)
+						button.MouseButton1Click:Connect(function()
+							bump(direction)
+						end)
+					end
+
+					smallButton("-", 126, -1)
+					smallButton("+", 204, 1)
+					showValue()
+				elseif option.kind == "bool" then
+					local box = Instance.new("TextButton")
+					box.Position = UDim2.fromOffset(126, y)
+					box.Size = UDim2.fromOffset(44, 22)
+					box.BackgroundColor3 = if module[option.field] then PURPLE else Color3.fromRGB(40, 40, 46)
+					box.BorderSizePixel = 0
+					box.AutoButtonColor = false
+					box.Text = ""
+					box.Parent = row
+					corner(box, 11)
+					local boxKnob = Instance.new("Frame")
+					boxKnob.Size = UDim2.fromOffset(14, 14)
+					boxKnob.Position = if module[option.field] then UDim2.fromOffset(26, 4) else UDim2.fromOffset(4, 4)
+					boxKnob.BackgroundColor3 = Color3.new(1, 1, 1)
+					boxKnob.BorderSizePixel = 0
+					boxKnob.Parent = box
+					corner(boxKnob, 7)
+					box.MouseButton1Click:Connect(function()
+						module[option.field] = not module[option.field]
+						saveSettings()
+						renderPage()
+					end)
+				elseif option.kind == "color" then
+					for colorIndex, color in CIRCLE_COLORS do
+						local swatch = Instance.new("TextButton")
+						swatch.Position = UDim2.fromOffset(126 + (colorIndex - 1) * 26, y)
+						swatch.Size = UDim2.fromOffset(20, 20)
+						swatch.BackgroundColor3 = color
+						swatch.BorderSizePixel = 0
+						swatch.AutoButtonColor = false
+						swatch.Text = ""
+						swatch.Parent = row
+						corner(swatch, 10)
+						local swatchStroke = Instance.new("UIStroke")
+						swatchStroke.Color = Color3.new(1, 1, 1)
+						swatchStroke.Thickness = 2
+						swatchStroke.Transparency = if module[option.field] == color then 0 else 1
+						swatchStroke.Parent = swatch
+						swatch.MouseButton1Click:Connect(function()
+							module[option.field] = color
+							saveSettings()
+							renderPage()
+						end)
+					end
+				elseif option.kind == "choice" then
+					for choiceIndex, choice in option.choices do
+						local picked = module[option.field] == choice
+						local choiceButton = Instance.new("TextButton")
+						choiceButton.Position = UDim2.fromOffset(126 + (choiceIndex - 1) * 78, y)
+						choiceButton.Size = UDim2.fromOffset(74, 22)
+						choiceButton.BackgroundColor3 = if picked then PURPLE else BLACK
+						choiceButton.BorderSizePixel = 0
+						choiceButton.AutoButtonColor = false
+						choiceButton.Font = Enum.Font.GothamBold
+						choiceButton.TextSize = 12
+						choiceButton.TextColor3 = if picked then Color3.new(1, 1, 1) else PURPLE
+						choiceButton.Text = choice
+						choiceButton.Parent = row
+						corner(choiceButton, 6)
+						choiceButton.MouseButton1Click:Connect(function()
+							module[option.field] = choice
+							saveSettings()
+							renderPage()
+						end)
+					end
 				end
-				saveSettings()
-				renderPage()
 			end
-
-			local function smallButton(text, x, direction)
-				local button = Instance.new("TextButton")
-				button.Position = UDim2.fromOffset(x, 52)
-				button.Size = UDim2.fromOffset(18, 18)
-				button.BackgroundColor3 = BLACK
-				button.BorderSizePixel = 0
-				button.AutoButtonColor = false
-				button.Font = Enum.Font.GothamBold
-				button.TextSize = 14
-				button.TextColor3 = PURPLE
-				button.Text = text
-				button.Parent = row
-				corner(button, 4)
-				button.MouseButton1Click:Connect(function()
-					bump(direction)
-				end)
-			end
-
-			label(row, caption, UDim2.fromOffset(36, 18), MUTED, 12).Position = UDim2.fromOffset(14, 52)
-			smallButton("-", 52, -1)
-			local valueLabel = label(row, tostring(amount), UDim2.fromOffset(36, 18), PURPLE, 12, Enum.TextXAlignment.Center)
-			valueLabel.Position = UDim2.fromOffset(72, 52)
-			smallButton("+", 110, 1)
 		end
 	end
+	task.defer(refreshCanvas)
 end
 
 local function destroyVisual(player)
@@ -962,20 +1143,6 @@ local function watch(player)
 	if player.Character ~= nil then
 		task.spawn(attach, player, player.Character)
 	end
-end
-
-local function currentFov()
-	local fov = 0
-	if modules.aimbot.enabled then
-		fov = math.max(fov, modules.aimbot.fov)
-	end
-	if modules.smooth.enabled then
-		fov = math.max(fov, modules.smooth.fov)
-	end
-	if modules.silent.enabled then
-		fov = math.max(fov, modules.silent.fov)
-	end
-	return fov
 end
 
 local function canSee(camera, part)
@@ -1282,6 +1449,10 @@ local function onStep()
 	end
 
 	applyMovement()
+	if state.menuOpen then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+	end
 
 	local aiming = false
 	if not state.menuOpen then
@@ -1312,32 +1483,51 @@ local function onStep()
 		restoreCamera(camera)
 	end
 
-	local fov = currentFov()
-	fovCircle.Visible = fov > 0 and not state.menuOpen
-	fovCircle.Size = UDim2.fromOffset(fov * 2, fov * 2)
+	for _, id in { "aimbot", "silent", "smooth" } do
+		local module = modules[id]
+		local stroke = fovCircles[id]
+		local show = module.enabled and module.showCircle ~= false and not state.menuOpen and module.fov ~= nil
+		if id == "smooth" and not state.holding[module.key] then
+			show = false
+		end
+		stroke.Parent.Visible = show
+		if show then
+			stroke.Color = module.circleColor or PURPLE
+			stroke.Parent.Size = UDim2.fromOffset(module.fov * 2, module.fov * 2)
+		end
+	end
 
 	updateEsp(camera)
 	updateTracers(camera)
 	if not state.menuOpen then
 		swingKillaura()
-		applyRage()
 	end
+	applyRage()
 end
 
-local function isSwordName(name)
+local SWORD_WORDS = { "sword", "blade", "melee", "hatchet", "katana" }
+local WEAPON_WORDS = {
+	Sword = SWORD_WORDS,
+	Dagger = { "dagger", "knife", "dirk", "shiv" },
+	Hammer = { "hammer", "mace", "club", "maul" },
+	Ranged = { "bow", "crossbow", "gun", "rifle", "revolver", "staff", "wand", "sling" },
+}
+
+local function matchesWords(name, words)
 	local lowered = string.lower(name)
-	return string.find(lowered, "sword", 1, true) ~= nil
-		or string.find(lowered, "blade", 1, true) ~= nil
-		or string.find(lowered, "melee", 1, true) ~= nil
-		or string.find(lowered, "hatchet", 1, true) ~= nil
-		or string.find(lowered, "katana", 1, true) ~= nil
+	for _, word in words do
+		if string.find(lowered, word, 1, true) ~= nil then
+			return true
+		end
+	end
+	return false
 end
 
-local function equipSword(character)
+local function equipWeapon(character, words)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local backpack = localPlayer:FindFirstChildOfClass("Backpack")
 	local held = character:FindFirstChildOfClass("Tool")
-	if held ~= nil and isSwordName(held.Name) then
+	if held ~= nil and matchesWords(held.Name, words) then
 		return held
 	end
 	local containers = { character, backpack }
@@ -1346,7 +1536,7 @@ local function equipSword(character)
 			continue
 		end
 		for _, child in container:GetChildren() do
-			if child:IsA("Tool") and isSwordName(child.Name) then
+			if child:IsA("Tool") and matchesWords(child.Name, words) then
 				if humanoid ~= nil and child.Parent ~= character then
 					humanoid:EquipTool(child)
 				end
@@ -1354,10 +1544,10 @@ local function equipSword(character)
 			end
 		end
 	end
-	return held
+	return nil
 end
 
-local function swingParts(character, tool)
+local function swingParts(character, tool, words)
 	local parts = {}
 	local function collect(root)
 		if root == nil then
@@ -1371,7 +1561,7 @@ local function swingParts(character, tool)
 	end
 	collect(tool)
 	for _, part in character:GetDescendants() do
-		if part:IsA("BasePart") and isSwordName(part.Name) then
+		if part:IsA("BasePart") and matchesWords(part.Name, words) then
 			table.insert(parts, part)
 		end
 	end
@@ -1405,8 +1595,21 @@ local function clickSwing()
 	end
 end
 
-local function hitCharacter(character, enemyCharacter)
-	local tool = equipSword(character)
+local function releaseMouse()
+	local camera = workspace.CurrentCamera
+	local x = if camera then camera.ViewportSize.X / 2 else 0
+	local y = if camera then camera.ViewportSize.Y / 2 else 0
+	pcall(function()
+		game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, false, game, 0)
+	end)
+	if typeof(mouse1release) == "function" then
+		pcall(mouse1release)
+	end
+end
+
+local function hitCharacter(character, enemyCharacter, words)
+	words = words or SWORD_WORDS
+	local tool = equipWeapon(character, words)
 	if tool ~= nil then
 		pcall(function()
 			tool:Activate()
@@ -1416,7 +1619,7 @@ local function hitCharacter(character, enemyCharacter)
 	if typeof(firetouchinterest) ~= "function" or enemyCharacter == nil then
 		return
 	end
-	local parts = swingParts(character, tool)
+	local parts = swingParts(character, tool, words)
 	for _, enemyPart in enemyCharacter:GetDescendants() do
 		if enemyPart:IsA("BasePart") then
 			for _, part in parts do
@@ -1459,45 +1662,152 @@ function swingKillaura()
 	end
 end
 
-function applyRage()
-	if not modules.rage.enabled then
-		return
+local function livingEnemyRoot(player)
+	if player == nil or sideOf(player) ~= "enemy" then
+		return nil
 	end
+	local theirCharacter = characterOf(player)
+	local theirRoot = theirCharacter and theirCharacter:FindFirstChild("HumanoidRootPart")
+	local humanoid = theirCharacter and theirCharacter:FindFirstChildOfClass("Humanoid")
+	if theirRoot == nil or humanoid == nil or humanoid.Health <= 0 then
+		return nil
+	end
+	return theirRoot
+end
+
+local function nearestEnemy(origin)
+	local targetPlayer = nil
+	local closest = math.huge
+	for _, player in Players:GetPlayers() do
+		local theirRoot = livingEnemyRoot(player)
+		if theirRoot == nil then
+			continue
+		end
+		local offset = theirRoot.Position - origin
+		local distance = Vector2.new(offset.X, offset.Z).Magnitude
+		if distance < closest then
+			closest = distance
+			targetPlayer = player
+		end
+	end
+	return targetPlayer
+end
+
+function applyRage()
 	local character = localPlayer.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not modules.rage.enabled then
+		if state.rageHolding then
+			state.rageHolding = false
+			releaseMouse()
+		end
+		if state.rageActive then
+			state.rageActive = false
+			state.rageTarget = nil
+			state.rageReleaseUntil = os.clock() + 0.3
+		end
+		if root ~= nil and state.rageReturn ~= nil and os.clock() < (state.rageReleaseUntil or 0) then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.CFrame = state.rageReturn
+		elseif os.clock() >= (state.rageReleaseUntil or 0) then
+			state.rageReturn = nil
+		end
+		return
+	end
 	if character == nil or root == nil then
 		return
 	end
 
-	local targetCharacter = nil
-	local targetRoot = nil
-	local closest = math.huge
-	for _, player in Players:GetPlayers() do
-		if sideOf(player) ~= "enemy" then
-			continue
-		end
-		local theirCharacter = characterOf(player)
-		local theirRoot = theirCharacter and theirCharacter:FindFirstChild("HumanoidRootPart")
-		local humanoid = theirCharacter and theirCharacter:FindFirstChildOfClass("Humanoid")
-		if theirRoot == nil or humanoid == nil or humanoid.Health <= 0 then
-			continue
-		end
-		local distance = (theirRoot.Position - root.Position).Magnitude
-		if distance < closest then
-			closest = distance
-			targetCharacter = theirCharacter
-			targetRoot = theirRoot
-		end
+	if not state.rageActive then
+		state.rageActive = true
+		state.rageReturn = root.CFrame
+		state.ragePhase = "hide"
+		state.rageUntil = os.clock() + (modules.rage.hide or 0.45)
+		state.rageSwung = false
+		state.rageTarget = nearestEnemy(root.Position)
 	end
+
+	if livingEnemyRoot(state.rageTarget) == nil then
+		local origin = if state.rageReturn then state.rageReturn.Position else root.Position
+		state.rageTarget = nearestEnemy(origin)
+		state.ragePhase = "hide"
+		state.rageUntil = os.clock() + (modules.rage.hide or 0.45)
+		state.rageSwung = false
+	end
+
+	local targetRoot = livingEnemyRoot(state.rageTarget)
 	if targetRoot == nil then
 		return
 	end
 
 	root.AssemblyLinearVelocity = Vector3.zero
-	root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
-	if os.clock() >= state.nextSwing then
-		hitCharacter(character, targetCharacter)
-		state.nextSwing = os.clock() + 0.12
+	if state.menuOpen then
+		root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 80, 0))
+		return
+	end
+
+	local now = os.clock()
+	if now >= state.rageUntil then
+		if state.ragePhase == "hide" then
+			state.ragePhase = "attack"
+			state.rageUntil = now + math.clamp(modules.rage.attack or 0.08, 0.01, 1)
+			state.rageSwung = false
+		else
+			if state.rageHolding then
+				state.rageHolding = false
+				releaseMouse()
+			end
+			state.ragePhase = "hide"
+			state.rageUntil = now + math.clamp(modules.rage.hide or 0.45, 0.01, 1)
+		end
+	end
+
+	local method = modules.rage.method or "Sword"
+	local words = WEAPON_WORDS[method] or SWORD_WORDS
+	if state.ragePhase == "hide" then
+		root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 80, 0))
+		return
+	end
+
+	if method == "Ranged" then
+		local flat = Vector3.new(targetRoot.CFrame.LookVector.X, 0, targetRoot.CFrame.LookVector.Z)
+		if flat.Magnitude < 0.1 then
+			flat = Vector3.new(0, 0, 1)
+		else
+			flat = flat.Unit
+		end
+		local above = targetRoot.Position + Vector3.new(0, 12, 0) - flat * 8
+		root.CFrame = CFrame.lookAt(above, targetRoot.Position + Vector3.new(0, 1.5, 0))
+		local camera = workspace.CurrentCamera
+		if camera ~= nil then
+			ownCamera(camera)
+			aimAt(camera, targetRoot, 1)
+		end
+		if not state.rageSwung then
+			local tool = equipWeapon(character, words)
+			if tool ~= nil then
+				pcall(function()
+					tool:Activate()
+				end)
+			end
+			local x = if camera then camera.ViewportSize.X / 2 else 0
+			local y = if camera then camera.ViewportSize.Y / 2 else 0
+			pcall(function()
+				game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, true, game, 0)
+			end)
+			if typeof(mouse1press) == "function" then
+				pcall(mouse1press)
+			end
+			state.rageSwung = true
+			state.rageHolding = true
+		end
+	else
+		root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
+		if not state.rageSwung then
+			hitCharacter(character, targetRoot.Parent, words)
+			state.rageSwung = true
+		end
 	end
 end
 
@@ -1573,6 +1883,19 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 		end
 		state.menuOpen = not state.menuOpen
 		holder.Visible = state.menuOpen
+		if state.menuOpen then
+			state.savedMouseBehavior = UserInputService.MouseBehavior
+			state.savedMouseIcon = UserInputService.MouseIconEnabled
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			UserInputService.MouseIconEnabled = true
+		else
+			if state.savedMouseBehavior ~= nil then
+				UserInputService.MouseBehavior = state.savedMouseBehavior
+			end
+			if state.savedMouseIcon ~= nil then
+				UserInputService.MouseIconEnabled = state.savedMouseIcon
+			end
+		end
 		return
 	end
 
@@ -1607,6 +1930,15 @@ table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
 		local delta = input.Position - dragStart
 		holder.Position = UDim2.new(dragOrigin.X.Scale, dragOrigin.X.Offset + delta.X, dragOrigin.Y.Scale, dragOrigin.Y.Offset + delta.Y)
+	elseif state.menuOpen and input.UserInputType == Enum.UserInputType.MouseWheel then
+		local mouse = UserInputService:GetMouseLocation()
+		local pos = content.AbsolutePosition
+		local size = content.AbsoluteSize
+		if mouse.X >= pos.X and mouse.X <= pos.X + size.X and mouse.Y >= pos.Y and mouse.Y <= pos.Y + size.Y then
+			local maxY = math.max(0, content.AbsoluteCanvasSize.Y - content.AbsoluteWindowSize.Y)
+			local nextY = math.clamp(content.CanvasPosition.Y - input.Position.Z * 56, 0, maxY)
+			content.CanvasPosition = Vector2.new(0, nextY)
+		end
 	end
 end))
 
@@ -1713,12 +2045,27 @@ function saveSettings()
 		modules = {},
 	}
 	for id, module in modules do
-		data.modules[id] = {
+		local packed = {
 			enabled = module.enabled,
 			key = if module.key then module.key.Name else nil,
 			fov = module.fov,
 			value = module.value,
 		}
+		if module.options then
+			for _, option in module.options do
+				local value = module[option.field]
+				if typeof(value) == "Color3" then
+					packed[option.field] = {
+						math.floor(value.R * 255 + 0.5),
+						math.floor(value.G * 255 + 0.5),
+						math.floor(value.B * 255 + 0.5),
+					}
+				else
+					packed[option.field] = value
+				end
+			end
+		end
+		data.modules[id] = packed
 	end
 	pcall(writefile, SETTINGS_PATH, HttpService:JSONEncode(data))
 
@@ -1845,6 +2192,33 @@ local function loadSettings()
 				end
 				if type(saved.value) == "number" then
 					module.value = saved.value
+				end
+				if module.options then
+					for _, option in module.options do
+						local savedValue = saved[option.field]
+						if option.kind == "number" and type(savedValue) == "number" then
+							local minValue = option.min or module.min
+							local maxValue = option.max or module.max
+							if minValue and maxValue then
+								savedValue = math.clamp(savedValue, minValue, maxValue)
+							end
+							module[option.field] = savedValue
+						elseif option.kind == "bool" and type(savedValue) == "boolean" then
+							module[option.field] = savedValue
+						elseif option.kind == "choice" and type(savedValue) == "string" then
+							for _, choice in option.choices do
+								if choice == savedValue then
+									module[option.field] = savedValue
+									break
+								end
+							end
+						elseif option.kind == "color" and type(savedValue) == "table" then
+							local r, g, b = savedValue[1], savedValue[2], savedValue[3]
+							if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+								module[option.field] = Color3.fromRGB(r, g, b)
+							end
+						end
+					end
 				end
 			end
 		end
