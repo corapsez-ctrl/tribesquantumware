@@ -212,6 +212,7 @@ local state = {
 	sourceUrl = "",
 	silentTarget = nil,
 	rageSilent = false,
+	rageHiddenGuis = {},
 	internalRay = false,
 	wasFlying = false,
 	openModule = nil,
@@ -482,6 +483,21 @@ watermark.TextXAlignment = Enum.TextXAlignment.Left
 watermark.TextColor3 = PURPLE
 watermark.Text = "QuantumWare"
 watermark.Parent = gui
+
+local rageStatus = Instance.new("TextLabel")
+rageStatus.Name = "RageStatus"
+rageStatus.AnchorPoint = Vector2.new(0.5, 0)
+rageStatus.BackgroundTransparency = 1
+rageStatus.Position = UDim2.new(0.5, 0, 0, 64)
+rageStatus.Size = UDim2.fromOffset(320, 28)
+rageStatus.Font = Enum.Font.GothamBold
+rageStatus.TextSize = 22
+rageStatus.TextColor3 = Color3.new(1, 1, 1)
+rageStatus.TextStrokeColor3 = Color3.new(0, 0, 0)
+rageStatus.TextStrokeTransparency = 0
+rageStatus.Text = "status: void"
+rageStatus.Visible = false
+rageStatus.Parent = gui
 
 local popups = Instance.new("Frame")
 popups.Name = "Popups"
@@ -1523,8 +1539,11 @@ local WEAPON_WORDS = {
 	Sword = SWORD_WORDS,
 	Dagger = { "dagger", "knife", "dirk", "shiv" },
 	Hammer = { "hammer", "mace", "club", "maul" },
-	Ranged = { "bow", "crossbow", "gun", "rifle", "revolver", "staff", "wand", "sling" },
+	Ranged = { "crossbow", "xbow", "bow", "gun", "rifle", "revolver", "staff", "wand", "sling", "bolt" },
 }
+
+local BOLT_WORDS = { "arrow", "bolt", "projectile", "crossbow", "bullet", "shot", "dart" }
+local guidedBolts = {}
 
 local function matchesWords(name, words)
 	local lowered = string.lower(name)
@@ -1536,29 +1555,149 @@ local function matchesWords(name, words)
 	return false
 end
 
-local function equipWeapon(character, words)
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local backpack = localPlayer:FindFirstChildOfClass("Backpack")
-	local held = character:FindFirstChildOfClass("Tool")
-	if held ~= nil and matchesWords(held.Name, words) then
-		return held
-	end
-	local containers = { character, backpack }
-	for _, container in containers do
+local function eachTool(character)
+	local seen = {}
+	local list = {}
+	local function add(container)
 		if container == nil then
-			continue
+			return
 		end
-		for _, child in container:GetChildren() do
-			if child:IsA("Tool") and matchesWords(child.Name, words) then
-				if humanoid ~= nil and child.Parent ~= character then
-					humanoid:EquipTool(child)
-				end
-				return child
+		for _, child in container:GetDescendants() do
+			if child:IsA("Tool") and not seen[child] then
+				seen[child] = true
+				table.insert(list, child)
 			end
 		end
 	end
-	return nil
+	add(character)
+	add(localPlayer:FindFirstChildOfClass("Backpack"))
+	add(localPlayer:FindFirstChild("StarterGear"))
+	return list
 end
+
+local function scoreTool(tool, words)
+	local blob = string.lower(tool.Name)
+	for _, descendant in tool:GetDescendants() do
+		blob ..= " " .. string.lower(descendant.Name)
+	end
+	if string.find(blob, "crossbow", 1, true) ~= nil or string.find(blob, "xbow", 1, true) ~= nil then
+		return 3
+	end
+	for _, word in words do
+		if string.find(blob, word, 1, true) ~= nil then
+			return 2
+		end
+	end
+	return 0
+end
+
+local function equipWeapon(character, words)
+	local best = nil
+	local bestScore = 0
+	for _, tool in eachTool(character) do
+		local score = scoreTool(tool, words)
+		if score > bestScore then
+			best = tool
+			bestScore = score
+		end
+	end
+	if best == nil then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if best.Parent ~= character then
+		pcall(function()
+			best.Parent = character
+		end)
+		if humanoid ~= nil then
+			pcall(function()
+				humanoid:EquipTool(best)
+			end)
+		end
+	end
+	return best
+end
+
+local function leadPoint(fromPosition, part)
+	local root = part.Parent and part.Parent:FindFirstChild("HumanoidRootPart") or part
+	local velocity = root.AssemblyLinearVelocity
+	local flat = (Vector3.new(part.Position.X, 0, part.Position.Z) - Vector3.new(fromPosition.X, 0, fromPosition.Z)).Magnitude
+	local flight = math.max(flat, 1) / ARROW_SPEED
+	local gravity = workspace.Gravity
+	if gravity <= 0 then
+		gravity = 196.2
+	end
+	return part.Position + velocity * flight + Vector3.new(0, 0.5 * gravity * flight * flight, 0)
+end
+
+local function guideBolt(part)
+	if not part:IsA("BasePart") or guidedBolts[part] then
+		return
+	end
+	if os.clock() > (state.rageGuideUntil or 0) then
+		return
+	end
+	local character = localPlayer.Character
+	if character ~= nil and part:IsDescendantOf(character) then
+		return
+	end
+	if state.rageVisual ~= nil and part:IsDescendantOf(state.rageVisual) then
+		return
+	end
+	local from = state.rageShootFrom
+	local goal = state.silentPoint
+	if from == nil or goal == nil then
+		return
+	end
+	local fromDistance = (part.Position - from).Magnitude
+	local goalDistance = (part.Position - goal).Magnitude
+	if fromDistance > 40 and goalDistance > 60 then
+		return
+	end
+	local blob = string.lower(part.Name .. " " .. (if part.Parent then part.Parent.Name else ""))
+	local named = matchesWords(blob, BOLT_WORDS)
+	if not named and not (fromDistance < 20 and part.Size.Magnitude < 8) then
+		return
+	end
+	guidedBolts[part] = true
+	part.CanCollide = false
+	task.spawn(function()
+		local started = os.clock()
+		while part.Parent ~= nil and os.clock() - started < 1.3 do
+			local point = state.silentPoint or goal
+			local left = point - part.Position
+			if left.Magnitude < 3.5 then
+				part.CFrame = CFrame.new(point)
+				part.AssemblyLinearVelocity = Vector3.zero
+				local enemy = state.rageTarget and characterOf(state.rageTarget)
+				if enemy ~= nil and typeof(firetouchinterest) == "function" then
+					for _, enemyPart in enemy:GetDescendants() do
+						if enemyPart:IsA("BasePart") then
+							pcall(firetouchinterest, part, enemyPart, 0)
+							pcall(firetouchinterest, part, enemyPart, 1)
+						end
+					end
+				end
+				break
+			end
+			part.AssemblyLinearVelocity = left.Unit * 420
+			part.CFrame = CFrame.lookAt(part.Position, point)
+			task.wait()
+		end
+		guidedBolts[part] = nil
+	end)
+end
+
+table.insert(connections, workspace.DescendantAdded:Connect(function(inst)
+	if inst:IsA("BasePart") then
+		guideBolt(inst)
+	elseif inst:IsA("Model") then
+		local primary = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+		if primary ~= nil then
+			guideBolt(primary)
+		end
+	end
+end))
 
 local function swingParts(character, tool, words)
 	local parts = {}
@@ -1711,6 +1850,129 @@ local function pickHideSpot(around)
 	return around + Vector3.new(math.cos(angle) * 1000, 50 + math.random(0, 40), math.sin(angle) * 1000)
 end
 
+local function setRageStatus(text)
+	rageStatus.Visible = text ~= nil
+	if text ~= nil then
+		rageStatus.Text = text
+	end
+end
+
+local function hideRealCharacter(character, hidden)
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("BasePart") or descendant:IsA("Decal") or descendant:IsA("Texture") then
+			descendant.LocalTransparencyModifier = if hidden then 1 else 0
+		elseif descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui") then
+			if hidden then
+				if state.rageHiddenGuis[descendant] == nil then
+					state.rageHiddenGuis[descendant] = descendant.Enabled
+				end
+				descendant.Enabled = false
+			elseif state.rageHiddenGuis[descendant] ~= nil then
+				descendant.Enabled = state.rageHiddenGuis[descendant]
+			end
+		end
+	end
+	if not hidden then
+		table.clear(state.rageHiddenGuis)
+	end
+end
+
+local function destroyRageVisual()
+	if state.rageVisual ~= nil then
+		state.rageVisual:Destroy()
+		state.rageVisual = nil
+	end
+	state.rageVisualOffsets = nil
+	state.rageVisualCharacter = nil
+end
+
+local function ensureRageVisual(character)
+	if state.rageVisual ~= nil and state.rageVisual.Parent ~= nil and state.rageVisualCharacter == character then
+		return state.rageVisual
+	end
+	destroyRageVisual()
+	character.Archivable = true
+	local ok, clone = pcall(function()
+		return character:Clone()
+	end)
+	character.Archivable = false
+	if not ok or clone == nil then
+		return nil
+	end
+	local cloneRoot = clone:FindFirstChild("HumanoidRootPart")
+	if cloneRoot == nil then
+		clone:Destroy()
+		return nil
+	end
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+			descendant.AssemblyLinearVelocity = Vector3.zero
+		elseif descendant:IsA("Humanoid") then
+			descendant.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			descendant.PlatformStand = true
+		end
+	end
+	local offsets = {}
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			offsets[descendant] = cloneRoot.CFrame:ToObjectSpace(descendant.CFrame)
+		end
+	end
+	clone.Name = "QuantumWareVisual"
+	clone.Parent = workspace
+	state.rageVisual = clone
+	state.rageVisualOffsets = offsets
+	state.rageVisualCharacter = character
+	return clone
+end
+
+local function showSpawnView(character)
+	if state.rageReturn == nil then
+		return
+	end
+	hideRealCharacter(character, true)
+	ensureRageVisual(character)
+	local home = state.rageReturn
+	if state.rageVisualOffsets ~= nil then
+		for part, offset in state.rageVisualOffsets do
+			if part.Parent ~= nil then
+				part.CFrame = home * offset
+			end
+		end
+	end
+	local camera = workspace.CurrentCamera
+	if camera == nil then
+		return
+	end
+	ownCamera(camera)
+	local flat = Vector3.new(home.LookVector.X, 0, home.LookVector.Z)
+	if flat.Magnitude < 0.05 then
+		flat = Vector3.new(0, 0, -1)
+	else
+		flat = flat.Unit
+	end
+	local focus = home.Position + Vector3.new(0, 1.5, 0)
+	camera.CFrame = CFrame.lookAt(focus + Vector3.new(0, 1.2, 0) - flat * 12, focus)
+end
+
+local function clearRageView(character)
+	setRageStatus(nil)
+	destroyRageVisual()
+	if character ~= nil then
+		hideRealCharacter(character, false)
+	end
+	local camera = workspace.CurrentCamera
+	if camera ~= nil then
+		restoreCamera(camera)
+	end
+end
+
 function applyRage()
 	local character = localPlayer.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -1726,6 +1988,7 @@ function applyRage()
 			state.rageSilent = false
 			state.rageHidePos = nil
 			state.rageReleaseUntil = os.clock() + 0.3
+			clearRageView(character)
 		end
 		if root ~= nil and state.rageReturn ~= nil and os.clock() < (state.rageReleaseUntil or 0) then
 			root.AssemblyLinearVelocity = Vector3.zero
@@ -1766,7 +2029,11 @@ function applyRage()
 		if state.rageHidePos ~= nil then
 			root.CFrame = CFrame.new(state.rageHidePos)
 		end
-		state.rageSilent = false
+		if os.clock() >= (state.rageGuideUntil or 0) then
+			state.rageSilent = false
+		end
+		setRageStatus("status: void")
+		showSpawnView(character)
 		return
 	end
 
@@ -1775,7 +2042,11 @@ function applyRage()
 			state.rageHidePos = pickHideSpot(targetRoot.Position)
 		end
 		root.CFrame = CFrame.new(state.rageHidePos)
-		state.rageSilent = false
+		if os.clock() >= (state.rageGuideUntil or 0) then
+			state.rageSilent = false
+		end
+		setRageStatus("status: void")
+		showSpawnView(character)
 		return
 	end
 
@@ -1799,61 +2070,63 @@ function applyRage()
 			state.rageHidePos = pickHideSpot(targetRoot.Position)
 		end
 		root.CFrame = CFrame.new(state.rageHidePos)
-		state.rageSilent = false
+		if os.clock() >= (state.rageGuideUntil or 0) then
+			state.rageSilent = false
+		end
+		setRageStatus("status: void")
+		showSpawnView(character)
 		return
 	end
 
 	if method == "Ranged" then
 		local aimPart = aimPartOf(targetRoot.Parent) or targetRoot
 		local above = targetRoot.Position + Vector3.new(0, 10, 0)
+		local focus = leadPoint(above, aimPart)
+		root.CFrame = CFrame.lookAt(above, focus)
+		root.AssemblyLinearVelocity = Vector3.zero
 		local camera = workspace.CurrentCamera
-		local focus = aimPart.Position
 		if camera ~= nil then
 			ownCamera(camera)
-			local camPos = above + Vector3.new(0, 2.2, 0)
-			camera.CFrame = CFrame.lookAt(camPos, aimPart.Position)
-			focus = predictedPoint(camera, aimPart)
-			camera.CFrame = CFrame.lookAt(camPos, focus)
+			camera.CFrame = CFrame.lookAt(above + Vector3.new(0, 2.2, 0), focus)
 		end
-		root.CFrame = CFrame.lookAt(above, focus)
+		state.rageShootFrom = above
+		state.silentPoint = focus
 		state.silentTarget = aimPart
 		state.rageSilent = true
-		if not state.rageSwung then
-			local tool = equipWeapon(character, words)
+		state.rageGuideUntil = math.max(state.rageGuideUntil or 0, now + attackTime + 0.8)
+		local tool = equipWeapon(character, words)
+		if os.clock() >= (state.rageNextShot or 0) then
 			if tool ~= nil then
 				pcall(function()
 					tool:Activate()
 				end)
 			end
 			clickSwing()
-			local camera = workspace.CurrentCamera
-			local x = if camera then camera.ViewportSize.X / 2 else 0
-			local y = if camera then camera.ViewportSize.Y / 2 else 0
-			pcall(function()
-				game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, true, game, 0)
+			state.rageNextShot = os.clock() + 0.18
+			task.delay(0.08, function()
+				for _, child in workspace:GetChildren() do
+					if child:IsA("BasePart") then
+						guideBolt(child)
+					elseif child:IsA("Model") then
+						local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
+						if primary ~= nil then
+							guideBolt(primary)
+						end
+					end
+				end
 			end)
-			if typeof(mouse1press) == "function" then
-				pcall(mouse1press)
-			end
-			state.rageSwung = true
-			state.rageHolding = true
 		end
 		if leavingAttack then
 			if state.rageHolding then
 				state.rageHolding = false
 				releaseMouse()
 			end
-			local tool = equipWeapon(character, words)
-			if tool ~= nil then
-				pcall(function()
-					tool:Activate()
-				end)
-			end
 			state.ragePhase = "hide"
 			state.rageUntil = now + hideTime
 			state.rageHidePos = pickHideSpot(targetRoot.Position)
-			state.rageSilent = false
 		end
+		setRageStatus(if state.ragePhase == "attack" then "status: attacking" else "status: void")
+		showSpawnView(character)
 	else
 		state.rageSilent = false
 		root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
@@ -1866,6 +2139,8 @@ function applyRage()
 			state.rageUntil = now + hideTime
 			state.rageHidePos = pickHideSpot(targetRoot.Position)
 		end
+		setRageStatus(if state.ragePhase == "attack" then "status: attacking" else "status: void")
+		showSpawnView(character)
 	end
 end
 
@@ -1881,6 +2156,12 @@ local function unload()
 		destroyVisual(player)
 	end
 	local character = localPlayer.Character
+	clearRageView(character)
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root ~= nil and state.rageReturn ~= nil then
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.CFrame = state.rageReturn
+	end
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if humanoid ~= nil and state.savedSpeed ~= nil then
 		humanoid.WalkSpeed = state.savedSpeed
@@ -2090,11 +2371,16 @@ local function installSilentAim()
 	local oldNamecall
 	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 		local method = getnamecallmethod()
-		if state.internalRay or method ~= "Raycast" or self ~= workspace or not (modules.silent.enabled or state.rageSilent) then
+		local castIndex = if method == "Raycast" or method == "Spherecast" or method == "Blockcast" or method == "Shapecast" then 2 else nil
+		if state.internalRay or castIndex == nil or self ~= workspace or not (modules.silent.enabled or state.rageSilent) then
 			return oldNamecall(self, ...)
 		end
+		local goal = state.silentPoint
 		local target = state.silentTarget
-		if target == nil or target.Parent == nil then
+		if goal == nil and target ~= nil and target.Parent ~= nil then
+			goal = target.Position
+		end
+		if goal == nil then
 			return oldNamecall(self, ...)
 		end
 		local origin = ...
@@ -2102,7 +2388,7 @@ local function installSilentAim()
 			return oldNamecall(self, ...)
 		end
 		local args = { ... }
-		args[2] = target.Position - origin
+		args[castIndex] = goal - origin
 		return oldNamecall(self, unpack(args))
 	end)
 end
