@@ -116,10 +116,10 @@ local modules = {
 		desc = "Fly with WASD, Space, and Ctrl",
 		key = Enum.KeyCode.F,
 		enabled = false,
-		value = 60,
-		min = 20,
-		max = 160,
-		step = 5,
+		value = 300,
+		min = 120,
+		max = 700,
+		step = 20,
 		options = {
 			{ field = "value", name = "Speed", kind = "number" },
 		},
@@ -174,15 +174,15 @@ local modules = {
 	rage = {
 		page = "Rage",
 		name = "Underkill",
-		desc = "Hides in the sky, then strikes with the weapon you pick",
+		desc = "Hides far away, then strikes with the weapon you pick",
 		key = Enum.KeyCode.V,
 		enabled = false,
-		hide = 0.45,
-		attack = 0.08,
+		hide = 2,
+		attack = 0.5,
 		method = "Sword",
 		options = {
-			{ field = "hide", name = "Hide", kind = "number", min = 0.01, max = 1, step = 0.01 },
-			{ field = "attack", name = "Attack", kind = "number", min = 0.01, max = 1, step = 0.01 },
+			{ field = "hide", name = "Hide", kind = "number", min = 1, max = 5, step = 0.25 },
+			{ field = "attack", name = "Attack", kind = "number", min = 0.35, max = 1, step = 0.05 },
 			{ field = "method", name = "Method", kind = "choice", choices = { "Sword", "Dagger", "Hammer", "Ranged" } },
 		},
 	},
@@ -211,6 +211,7 @@ local state = {
 	autoload = true,
 	sourceUrl = "",
 	silentTarget = nil,
+	rageSilent = false,
 	internalRay = false,
 	wasFlying = false,
 	openModule = nil,
@@ -679,6 +680,7 @@ local function label(parent, text, size, color, fontSize, xAlign)
 end
 
 local saveSettings
+local moduleRows = {}
 
 local function renderPage()
 	watermark.Visible = modules.watermark.enabled
@@ -687,7 +689,7 @@ local function renderPage()
 	elseif typeof(state.binding) == "table" then
 		bindHint.Text = "Press a key for " .. state.binding.name
 	else
-		bindHint.Text = "Click a module name to open its settings"
+		bindHint.Text = "Right click a module for its settings"
 	end
 
 	for _, child in pageColumn:GetChildren() do
@@ -806,6 +808,7 @@ local function renderPage()
 		return
 	end
 
+	table.clear(moduleRows)
 	for _, id in pageOrder[state.page] do
 		local module = modules[id]
 		local opened = state.openModule == id and module.options ~= nil
@@ -815,8 +818,10 @@ local function renderPage()
 		row.BackgroundColor3 = ROW
 		row.BorderSizePixel = 0
 		row.Active = true
+		row:SetAttribute("ModuleId", id)
 		row.Parent = content
 		corner(row, 12)
+		moduleRows[id] = row
 
 		local function toggleSettings()
 			if module.options == nil or state.settingsClick == id then
@@ -830,45 +835,18 @@ local function renderPage()
 			renderPage()
 		end
 
-		local nameButton = Instance.new("TextButton")
-		nameButton.BackgroundTransparency = 1
-		nameButton.Position = UDim2.fromOffset(14, 8)
-		nameButton.Size = UDim2.fromOffset(190, 24)
-		nameButton.Font = Enum.Font.GothamBold
-		nameButton.TextSize = 15
-		nameButton.TextXAlignment = Enum.TextXAlignment.Left
-		nameButton.TextColor3 = if opened then PURPLE else Color3.new(1, 1, 1)
-		nameButton.Text = module.name
-		nameButton.ZIndex = 3
-		nameButton.Parent = row
-		if module.options ~= nil then
-			nameButton.MouseButton1Click:Connect(toggleSettings)
-			nameButton.MouseButton2Click:Connect(toggleSettings)
-		end
-		label(row, module.desc, UDim2.fromOffset(190, 18), MUTED, 12).Position = UDim2.fromOffset(14, 32)
+		local hit = Instance.new("TextButton")
+		hit.Name = "Hit"
+		hit.BackgroundTransparency = 1
+		hit.Size = UDim2.fromScale(1, 1)
+		hit.Text = ""
+		hit.AutoButtonColor = false
+		hit.ZIndex = 1
+		hit.Parent = row
+		hit.MouseButton2Click:Connect(toggleSettings)
 
-		if module.options ~= nil then
-			local settingsButton = Instance.new("TextButton")
-			settingsButton.AnchorPoint = Vector2.new(1, 0)
-			settingsButton.Position = UDim2.new(1, -154, 0, 19)
-			settingsButton.Size = UDim2.fromOffset(78, 26)
-			settingsButton.BackgroundColor3 = if opened then PURPLE else BLACK
-			settingsButton.BorderSizePixel = 0
-			settingsButton.AutoButtonColor = false
-			settingsButton.Font = Enum.Font.GothamBold
-			settingsButton.TextSize = 12
-			settingsButton.TextColor3 = if opened then Color3.new(1, 1, 1) else PURPLE
-			settingsButton.Text = "Settings"
-			settingsButton.ZIndex = 3
-			settingsButton.Parent = row
-			corner(settingsButton, 8)
-			local settingsStroke = Instance.new("UIStroke")
-			settingsStroke.Color = PURPLE
-			settingsStroke.Transparency = if opened then 1 else 0.45
-			settingsStroke.Parent = settingsButton
-			settingsButton.MouseButton1Click:Connect(toggleSettings)
-			settingsButton.MouseButton2Click:Connect(toggleSettings)
-		end
+		label(row, module.name, UDim2.fromOffset(200, 24), if opened then PURPLE else Color3.new(1, 1, 1), 15).Position = UDim2.fromOffset(14, 8)
+		label(row, module.desc, UDim2.fromOffset(250, 18), MUTED, 12).Position = UDim2.fromOffset(14, 32)
 
 		local toggle = Instance.new("TextButton")
 		toggle.AnchorPoint = Vector2.new(1, 0)
@@ -1340,10 +1318,12 @@ local function applyMovement()
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
 			direction -= Vector3.yAxis
 		end
+		local now = os.clock()
+		local dt = math.clamp(now - (state.lastFly or now), 0, 0.05)
+		state.lastFly = now
+		root.AssemblyLinearVelocity = Vector3.zero
 		if direction.Magnitude > 0.05 then
-			root.AssemblyLinearVelocity = direction.Unit * modules.fly.value
-		else
-			root.AssemblyLinearVelocity = Vector3.zero
+			root.CFrame += direction.Unit * modules.fly.value * dt
 		end
 		return
 	elseif state.wasFlying then
@@ -1726,6 +1706,11 @@ local function nearestEnemy(origin)
 	return targetPlayer
 end
 
+local function pickHideSpot(around)
+	local angle = math.random() * math.pi * 2
+	return around + Vector3.new(math.cos(angle) * 1000, 50 + math.random(0, 40), math.sin(angle) * 1000)
+end
+
 function applyRage()
 	local character = localPlayer.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -1738,6 +1723,8 @@ function applyRage()
 		if state.rageActive then
 			state.rageActive = false
 			state.rageTarget = nil
+			state.rageSilent = false
+			state.rageHidePos = nil
 			state.rageReleaseUntil = os.clock() + 0.3
 		end
 		if root ~= nil and state.rageReturn ~= nil and os.clock() < (state.rageReleaseUntil or 0) then
@@ -1756,67 +1743,81 @@ function applyRage()
 		state.rageActive = true
 		state.rageReturn = root.CFrame
 		state.ragePhase = "hide"
-		state.rageUntil = os.clock() + (modules.rage.hide or 0.45)
+		state.rageUntil = os.clock() + math.clamp(modules.rage.hide or 2, 1, 5)
 		state.rageSwung = false
+		state.rageHidePos = pickHideSpot(root.Position)
 		state.rageTarget = nearestEnemy(root.Position)
 	end
 
 	if livingEnemyRoot(state.rageTarget) == nil then
 		local origin = if state.rageReturn then state.rageReturn.Position else root.Position
 		state.rageTarget = nearestEnemy(origin)
-		state.ragePhase = "hide"
-		state.rageUntil = os.clock() + (modules.rage.hide or 0.45)
+		if state.ragePhase ~= "hide" then
+			state.ragePhase = "hide"
+			state.rageUntil = os.clock() + math.clamp(modules.rage.hide or 2, 1, 5)
+			state.rageHidePos = pickHideSpot(origin)
+		end
 		state.rageSwung = false
 	end
 
 	local targetRoot = livingEnemyRoot(state.rageTarget)
+	root.AssemblyLinearVelocity = Vector3.zero
 	if targetRoot == nil then
+		if state.rageHidePos ~= nil then
+			root.CFrame = CFrame.new(state.rageHidePos)
+		end
+		state.rageSilent = false
 		return
 	end
 
-	root.AssemblyLinearVelocity = Vector3.zero
 	if state.menuOpen then
-		root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 80, 0))
+		if state.rageHidePos == nil then
+			state.rageHidePos = pickHideSpot(targetRoot.Position)
+		end
+		root.CFrame = CFrame.new(state.rageHidePos)
+		state.rageSilent = false
 		return
 	end
 
 	local now = os.clock()
-	if now >= state.rageUntil then
-		if state.ragePhase == "hide" then
-			state.ragePhase = "attack"
-			state.rageUntil = now + math.clamp(modules.rage.attack or 0.08, 0.01, 1)
-			state.rageSwung = false
-		else
-			if state.rageHolding then
-				state.rageHolding = false
-				releaseMouse()
-			end
-			state.ragePhase = "hide"
-			state.rageUntil = now + math.clamp(modules.rage.hide or 0.45, 0.01, 1)
-		end
-	end
-
+	local hideTime = math.clamp(modules.rage.hide or 2, 1, 5)
+	local attackTime = math.clamp(modules.rage.attack or 0.5, 0.35, 1)
 	local method = modules.rage.method or "Sword"
 	local words = WEAPON_WORDS[method] or SWORD_WORDS
+	local leavingAttack = state.ragePhase == "attack" and now >= state.rageUntil
+
+	if state.ragePhase == "hide" and now >= state.rageUntil then
+		state.ragePhase = "attack"
+		state.rageUntil = now + attackTime
+		state.rageSwung = false
+		state.rageNextHit = 0
+		leavingAttack = false
+	end
+
 	if state.ragePhase == "hide" then
-		root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 80, 0))
+		if state.rageHidePos == nil then
+			state.rageHidePos = pickHideSpot(targetRoot.Position)
+		end
+		root.CFrame = CFrame.new(state.rageHidePos)
+		state.rageSilent = false
 		return
 	end
 
 	if method == "Ranged" then
-		local flat = Vector3.new(targetRoot.CFrame.LookVector.X, 0, targetRoot.CFrame.LookVector.Z)
-		if flat.Magnitude < 0.1 then
-			flat = Vector3.new(0, 0, 1)
-		else
-			flat = flat.Unit
-		end
-		local above = targetRoot.Position + Vector3.new(0, 12, 0) - flat * 8
-		root.CFrame = CFrame.lookAt(above, targetRoot.Position + Vector3.new(0, 1.5, 0))
+		local aimPart = aimPartOf(targetRoot.Parent) or targetRoot
+		local above = targetRoot.Position + Vector3.new(0, 10, 0)
 		local camera = workspace.CurrentCamera
+		local focus = aimPart.Position
 		if camera ~= nil then
 			ownCamera(camera)
-			aimAt(camera, targetRoot, 1)
+			local camPos = above + Vector3.new(0, 2.2, 0)
+			camera.CFrame = CFrame.lookAt(camPos, aimPart.Position)
+			focus = predictedPoint(camera, aimPart)
+			camera.CFrame = CFrame.lookAt(camPos, focus)
 		end
+		root.CFrame = CFrame.lookAt(above, focus)
+		state.silentTarget = aimPart
+		state.rageSilent = true
 		if not state.rageSwung then
 			local tool = equipWeapon(character, words)
 			if tool ~= nil then
@@ -1824,6 +1825,8 @@ function applyRage()
 					tool:Activate()
 				end)
 			end
+			clickSwing()
+			local camera = workspace.CurrentCamera
 			local x = if camera then camera.ViewportSize.X / 2 else 0
 			local y = if camera then camera.ViewportSize.Y / 2 else 0
 			pcall(function()
@@ -1835,11 +1838,33 @@ function applyRage()
 			state.rageSwung = true
 			state.rageHolding = true
 		end
+		if leavingAttack then
+			if state.rageHolding then
+				state.rageHolding = false
+				releaseMouse()
+			end
+			local tool = equipWeapon(character, words)
+			if tool ~= nil then
+				pcall(function()
+					tool:Activate()
+				end)
+			end
+			state.ragePhase = "hide"
+			state.rageUntil = now + hideTime
+			state.rageHidePos = pickHideSpot(targetRoot.Position)
+			state.rageSilent = false
+		end
 	else
+		state.rageSilent = false
 		root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
-		if not state.rageSwung then
+		if os.clock() >= (state.rageNextHit or 0) then
 			hitCharacter(character, targetRoot.Parent, words)
-			state.rageSwung = true
+			state.rageNextHit = os.clock() + 0.15
+		end
+		if leavingAttack then
+			state.ragePhase = "hide"
+			state.rageUntil = now + hideTime
+			state.rageHidePos = pickHideSpot(targetRoot.Position)
 		end
 	end
 end
@@ -1886,6 +1911,34 @@ local function toggleModule(module)
 end
 
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 and state.menuOpen then
+		local mouse = UserInputService:GetMouseLocation()
+		local inset = game:GetService("GuiService"):GetGuiInset()
+		local function rowAt(point)
+			for id, row in moduleRows do
+				if row.Parent == nil or modules[id] == nil or modules[id].options == nil then
+					continue
+				end
+				local pos = row.AbsolutePosition
+				local size = row.AbsoluteSize
+				if point.X >= pos.X and point.X <= pos.X + size.X and point.Y >= pos.Y and point.Y <= pos.Y + size.Y then
+					return id
+				end
+			end
+			return nil
+		end
+		local hitId = rowAt(mouse) or rowAt(mouse - inset)
+		if hitId ~= nil and state.settingsClick ~= hitId then
+			state.settingsClick = hitId
+			task.defer(function()
+				state.settingsClick = nil
+			end)
+			state.openModule = if state.openModule == hitId then nil else hitId
+			renderPage()
+		end
+		return
+	end
+
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then
 		return
 	end
@@ -1921,7 +1974,11 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 			state.savedMouseIcon = UserInputService.MouseIconEnabled
 			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 			UserInputService.MouseIconEnabled = true
+			game:GetService("ContextActionService"):BindActionAtPriority("QuantumWareRMB", function()
+				return Enum.ContextActionResult.Sink
+			end, false, 4000, Enum.UserInputType.MouseButton2)
 		else
+			game:GetService("ContextActionService"):UnbindAction("QuantumWareRMB")
 			if state.savedMouseBehavior ~= nil then
 				UserInputService.MouseBehavior = state.savedMouseBehavior
 			end
@@ -2033,7 +2090,7 @@ local function installSilentAim()
 	local oldNamecall
 	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 		local method = getnamecallmethod()
-		if state.internalRay or method ~= "Raycast" or self ~= workspace or not modules.silent.enabled then
+		if state.internalRay or method ~= "Raycast" or self ~= workspace or not (modules.silent.enabled or state.rageSilent) then
 			return oldNamecall(self, ...)
 		end
 		local target = state.silentTarget
@@ -2257,6 +2314,9 @@ local function loadSettings()
 		end
 	end
 	rememberScriptCopy()
+	if modules.fly.value <= 160 then
+		modules.fly.value = 300
+	end
 	saveSettings()
 end
 
