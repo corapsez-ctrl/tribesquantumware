@@ -11,8 +11,8 @@ local PURPLE_DIM = Color3.fromRGB(92, 40, 150)
 local BLACK = Color3.fromRGB(0, 0, 0)
 local ROW = Color3.fromRGB(14, 14, 16)
 local MUTED = Color3.fromRGB(168, 168, 176)
-local ENEMY_COLOR = Color3.fromRGB(255, 64, 64)
-local ALLY_COLOR = Color3.fromRGB(80, 220, 120)
+local ENEMY_COLOR = Color3.fromRGB(255, 55, 55)
+local ALLY_COLOR = Color3.fromRGB(70, 150, 255)
 
 local LOBBY_TEAMS = {
 	lobby = true,
@@ -60,6 +60,17 @@ local modules = {
 		max = 180,
 		step = 5,
 	},
+	killaura = {
+		page = "Blatant",
+		name = "Killaura",
+		desc = "Swings at enemies in range, including through walls",
+		key = Enum.KeyCode.X,
+		enabled = false,
+		value = 18,
+		min = 8,
+		max = 40,
+		step = 2,
+	},
 	smooth = {
 		page = "Closet",
 		name = "Smooth Aim",
@@ -75,7 +86,7 @@ local modules = {
 	esp = {
 		page = "Visuals",
 		name = "ESP",
-		desc = "Enemies in red with health, allies in green",
+		desc = "Enemies in red with health, allies in blue",
 		key = Enum.KeyCode.T,
 		enabled = false,
 	},
@@ -103,7 +114,7 @@ local modules = {
 }
 
 local pageOrder = {
-	Blatant = { "aimbot", "speed", "jump" },
+	Blatant = { "aimbot", "killaura", "speed", "jump" },
 	Closet = { "smooth" },
 	Visuals = { "esp", "allyEsp", "tracers", "watermark" },
 }
@@ -118,13 +129,17 @@ local state = {
 	savedJumpPower = nil,
 	savedJumpHeight = nil,
 	savedCameraType = nil,
+	cameraDistance = nil,
 	jumpUntil = 0,
+	nextSwing = 0,
 }
 
 local visuals = {}
 local characters = {}
 local tracerFrames = {}
-local ARROW_SPEED = 230
+local ARROW_SPEED = 200
+local knownSide = {}
+local classifiedAt = 0
 local connections = {}
 local dragging = false
 local dragStart
@@ -175,23 +190,154 @@ local function teamToken(player)
 			end
 		end
 	end
+	if player.TeamColor ~= nil then
+		local colorName = string.lower(player.TeamColor.Name)
+		if colorName ~= "medium stone grey" and colorName ~= "white" then
+			return colorName
+		end
+	end
 	return nil
+end
+
+local function tagBucket(player)
+	local character = player.Character
+	if character == nil then
+		return nil
+	end
+	for _, child in character:GetChildren() do
+		if not child:IsA("BillboardGui") or child.Name == "QuantumESPName" then
+			continue
+		end
+		for _, label in child:GetDescendants() do
+			if label:IsA("TextLabel") then
+				local color = label.TextColor3
+				if color.B > color.R + 0.15 then
+					return "blue"
+				end
+				if color.R > color.B + 0.15 then
+					return "red"
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function playerFromGui(object)
+	if object:IsA("TextLabel") or object:IsA("TextButton") then
+		local text = object.Text
+		for _, player in Players:GetPlayers() do
+			if text == player.Name or text == player.DisplayName or text == "@" .. player.Name then
+				return player
+			end
+		end
+	elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
+		local image = object.Image
+		local userId = string.match(image, "id=(%d+)")
+		if userId ~= nil then
+			for _, player in Players:GetPlayers() do
+				if tostring(player.UserId) == userId then
+					return player
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local characterOf
+local aimPartOf
+
+local function refreshClassification()
+	if os.clock() - classifiedAt < 0.35 then
+		return
+	end
+	classifiedAt = os.clock()
+	table.clear(knownSide)
+
+	local tokens = {}
+	for _, player in Players:GetPlayers() do
+		tokens[player] = teamToken(player) or tagBucket(player)
+	end
+	local mine = tokens[localPlayer]
+	local foundAlly = false
+	local confident = mine ~= nil
+	if mine ~= nil then
+		for _, player in Players:GetPlayers() do
+			if player ~= localPlayer and tokens[player] ~= nil then
+				local side = if tokens[player] == mine then "ally" else "enemy"
+				knownSide[player] = side
+				foundAlly = foundAlly or side == "ally"
+			end
+		end
+	end
+
+	local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+	local camera = workspace.CurrentCamera
+	if playerGui ~= nil and camera ~= nil then
+		local hits = {}
+		for _, object in playerGui:GetDescendants() do
+			local screen = object:FindFirstAncestorOfClass("ScreenGui")
+			if (screen ~= nil and screen.Name == "QuantumWare") or not object:IsA("GuiObject") or not object.Visible then
+				continue
+			end
+			local player = playerFromGui(object)
+			if player == nil then
+				continue
+			end
+			local center = object.AbsolutePosition + object.AbsoluteSize / 2
+			if center.Y > camera.ViewportSize.Y * 0.28 then
+				continue
+			end
+			if center.X < camera.ViewportSize.X * 0.2 or center.X > camera.ViewportSize.X * 0.8 then
+				continue
+			end
+			local previous = hits[player]
+			if previous == nil or center.Y < previous.Y then
+				hits[player] = center
+			end
+		end
+
+		local mineHit = hits[localPlayer]
+		local minX, maxX = math.huge, -math.huge
+		local count = 0
+		for _, center in hits do
+			count += 1
+			minX = math.min(minX, center.X)
+			maxX = math.max(maxX, center.X)
+		end
+		if mineHit ~= nil and count >= 2 and maxX - minX > 40 then
+			local mid = (minX + maxX) / 2
+			local mineOnLeft = mineHit.X <= mid
+			confident = true
+			for player, center in hits do
+				if player ~= localPlayer then
+					local sameSide = (center.X <= mid) == mineOnLeft
+					knownSide[player] = if sameSide then "ally" else "enemy"
+					foundAlly = foundAlly or sameSide
+				end
+			end
+		end
+	end
+
+	if confident and foundAlly then
+		for _, player in Players:GetPlayers() do
+			if player ~= localPlayer and knownSide[player] == nil then
+				knownSide[player] = "enemy"
+			end
+		end
+	end
 end
 
 local function sideOf(player)
 	if player == localPlayer or player.Parent == nil then
 		return nil
 	end
-	local mine = teamToken(localPlayer)
-	local theirs = teamToken(player)
-	if mine ~= nil and theirs ~= nil then
-		return if mine == theirs then "ally" else "enemy"
-	end
-	-- Tribes keeps sides on its own scoreboard, not on Roblox teams.
-	return "enemy"
+	refreshClassification()
+	return knownSide[player]
 end
 
-local function characterOf(player)
+function characterOf(player)
 	if player.Character ~= nil and player.Character.Parent ~= nil then
 		return player.Character
 	end
@@ -202,7 +348,7 @@ local function characterOf(player)
 	return nil
 end
 
-local function aimPartOf(character)
+function aimPartOf(character)
 	if character == nil then
 		return nil
 	end
@@ -247,6 +393,41 @@ watermark.TextXAlignment = Enum.TextXAlignment.Left
 watermark.TextColor3 = PURPLE
 watermark.Text = "QuantumWare"
 watermark.Parent = gui
+
+local popups = Instance.new("Frame")
+popups.Name = "Popups"
+popups.BackgroundTransparency = 1
+popups.Position = UDim2.fromOffset(16, 42)
+popups.Size = UDim2.fromOffset(240, 240)
+popups.Parent = gui
+local popupLayout = Instance.new("UIListLayout")
+popupLayout.Padding = UDim.new(0, 6)
+popupLayout.SortOrder = Enum.SortOrder.LayoutOrder
+popupLayout.Parent = popups
+
+local function notify(module)
+	local row = Instance.new("TextLabel")
+	row.BackgroundColor3 = BLACK
+	row.BackgroundTransparency = 0.15
+	row.Size = UDim2.fromOffset(180, 26)
+	row.Font = Enum.Font.GothamBold
+	row.TextSize = 13
+	row.TextColor3 = PURPLE
+	row.Text = module.name .. (if module.enabled then "  on" else "  off")
+	row.Parent = popups
+	local rowCorner = Instance.new("UICorner")
+	rowCorner.CornerRadius = UDim.new(0, 8)
+	rowCorner.Parent = row
+	local rowStroke = Instance.new("UIStroke")
+	rowStroke.Color = PURPLE
+	rowStroke.Transparency = 0.4
+	rowStroke.Parent = row
+	task.delay(2, function()
+		if row.Parent ~= nil then
+			row:Destroy()
+		end
+	end)
+end
 
 local fovCircle = Instance.new("Frame")
 fovCircle.Name = "Fov"
@@ -321,6 +502,18 @@ brand.Text = "QuantumWare"
 brand.ZIndex = 3
 brand.Parent = panel
 
+local bindHint = Instance.new("TextLabel")
+bindHint.BackgroundTransparency = 1
+bindHint.Position = UDim2.fromOffset(176, 18)
+bindHint.Size = UDim2.fromOffset(460, 22)
+bindHint.Font = Enum.Font.GothamBold
+bindHint.TextSize = 13
+bindHint.TextXAlignment = Enum.TextXAlignment.Left
+bindHint.TextColor3 = PURPLE
+bindHint.Text = "Click a key chip, then press a new key"
+bindHint.ZIndex = 3
+bindHint.Parent = panel
+
 local pageColumn = Instance.new("Frame")
 pageColumn.BackgroundTransparency = 1
 pageColumn.Position = UDim2.fromOffset(16, 58)
@@ -362,6 +555,13 @@ end
 
 local function renderPage()
 	watermark.Visible = modules.watermark.enabled
+	if state.binding == "menu" then
+		bindHint.Text = "Press a key for the menu"
+	elseif typeof(state.binding) == "table" then
+		bindHint.Text = "Press a key for " .. state.binding.name
+	else
+		bindHint.Text = "Click a key chip, then press a new key"
+	end
 
 	for _, child in pageColumn:GetChildren() do
 		if child:IsA("GuiObject") then
@@ -481,6 +681,7 @@ local function renderPage()
 			if module == modules.esp or module == modules.allyEsp then
 				refreshEsp()
 			end
+			notify(module)
 			renderPage()
 		end)
 
@@ -494,7 +695,7 @@ local function renderPage()
 		keyButton.Font = Enum.Font.GothamBold
 		keyButton.TextSize = 12
 		keyButton.TextColor3 = PURPLE
-		keyButton.Text = if state.binding == module then "..." else module.key.Name
+		keyButton.Text = if state.binding == module then "Press" else module.key.Name
 		keyButton.Parent = row
 		corner(keyButton, 8)
 		local keyStroke = Instance.new("UIStroke")
@@ -591,7 +792,7 @@ local function attach(player, character)
 	highlight.Adornee = character
 	highlight.FillColor = color
 	highlight.OutlineColor = color
-	highlight.FillTransparency = if side == "ally" then 0.75 else 0.45
+	highlight.FillTransparency = 0.72
 	highlight.OutlineTransparency = 0
 	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	highlight.Parent = espFolder
@@ -600,26 +801,40 @@ local function attach(player, character)
 	billboard.Name = "QuantumESPName"
 	billboard.Adornee = head
 	billboard.AlwaysOnTop = true
-	billboard.Size = UDim2.fromOffset(200, 36)
-	billboard.StudsOffset = Vector3.new(0, 2.6, 0)
+	billboard.Size = UDim2.fromOffset(220, 46)
+	billboard.StudsOffset = Vector3.new(0, 3.1, 0)
 	billboard.LightInfluence = 0
 	billboard.Parent = espFolder
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Size = UDim2.fromScale(1, 1)
+	nameLabel.Size = UDim2.new(1, 0, 0, 22)
 	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextSize = 14
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	nameLabel.TextStrokeTransparency = 0.4
+	nameLabel.TextSize = 16
+	nameLabel.TextColor3 = color
+	nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+	nameLabel.TextStrokeTransparency = 0.2
 	nameLabel.Text = player.DisplayName
 	nameLabel.Parent = billboard
+
+	local healthLabel = Instance.new("TextLabel")
+	healthLabel.BackgroundTransparency = 1
+	healthLabel.Position = UDim2.fromOffset(0, 20)
+	healthLabel.Size = UDim2.new(1, 0, 0, 20)
+	healthLabel.Font = Enum.Font.GothamBold
+	healthLabel.TextSize = 14
+	healthLabel.TextColor3 = color
+	healthLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+	healthLabel.TextStrokeTransparency = 0.2
+	healthLabel.Text = string.format("%d HP", math.floor(humanoid.Health + 0.5))
+	healthLabel.Parent = billboard
 
 	characters[player] = character
 	visuals[player] = {
 		highlight = highlight,
 		billboard = billboard,
 		label = nameLabel,
+		healthLabel = healthLabel,
 		humanoid = humanoid,
 		character = character,
 	}
@@ -682,13 +897,26 @@ local function currentFov()
 end
 
 local function predictedPoint(camera, part)
+	local origin = camera.CFrame.Position
 	local root = part.Parent and part.Parent:FindFirstChild("HumanoidRootPart") or part
 	local velocity = root.AssemblyLinearVelocity
-	local distance = (part.Position - camera.CFrame.Position).Magnitude
-	local flight = math.clamp(distance / ARROW_SPEED, 0, 1.25)
-	local lead = Vector3.new(velocity.X, velocity.Y * 0.25, velocity.Z) * flight
-	local drop = Vector3.new(0, 28 * flight * flight, 0)
-	return part.Position + lead + drop
+	local gravity = workspace.Gravity
+	if gravity <= 0 then
+		gravity = 196.2
+	end
+
+	local predicted = part.Position
+	local flight = 0
+	for _ = 1, 5 do
+		local offset = predicted - origin
+		local flat = Vector3.new(offset.X, 0, offset.Z).Magnitude
+		flight = math.max(flat, 1) / ARROW_SPEED
+		predicted = part.Position + velocity * flight
+	end
+
+	-- Drop grows with the square of flight time, so long shots aim higher.
+	local drop = 0.5 * gravity * flight * flight
+	return predicted + Vector3.new(0, drop, 0)
 end
 
 local function closestEnemy(camera, fov, lockOffscreen)
@@ -708,7 +936,7 @@ local function closestEnemy(camera, fov, lockOffscreen)
 			continue
 		end
 		local studs = (part.Position - camera.CFrame.Position).Magnitude
-		if studs > 500 then
+		if studs > 1200 then
 			continue
 		end
 		if studs < fallbackDistance then
@@ -732,23 +960,40 @@ local function closestEnemy(camera, fov, lockOffscreen)
 end
 
 local function aimAt(camera, part, alpha)
-	local goal = CFrame.lookAt(camera.CFrame.Position, predictedPoint(camera, part))
+	local character = localPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root == nil then
+		return
+	end
+
+	if state.cameraDistance == nil then
+		local current = (camera.CFrame.Position - root.Position).Magnitude
+		state.cameraDistance = math.clamp(if current > 1 then current else 12, 8, 14)
+	end
+
+	local predicted = predictedPoint(camera, part)
+	local lead = Vector3.new(predicted.X - part.Position.X, 0, predicted.Z - part.Position.Z)
+	if lead.Magnitude > 10 then
+		lead = lead.Unit * 10
+	end
+	local vertical = math.clamp(predicted.Y - part.Position.Y, -2, 6)
+	local focus = part.Position + lead + Vector3.new(0, vertical, 0)
+
+	local flat = Vector3.new(focus.X - root.Position.X, 0, focus.Z - root.Position.Z)
+	if flat.Magnitude < 0.05 then
+		return
+	end
+	local camPos = root.Position + Vector3.new(0, 2.6, 0) - flat.Unit * state.cameraDistance
+	local goal = CFrame.lookAt(camPos, focus)
 	if alpha >= 1 then
 		camera.CFrame = goal
 	else
 		camera.CFrame = camera.CFrame:Lerp(goal, alpha)
 	end
-
-	local root = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
-	if root ~= nil then
-		local flat = Vector3.new(part.Position.X, root.Position.Y, part.Position.Z)
-		if (flat - root.Position).Magnitude > 0.2 then
-			root.CFrame = CFrame.lookAt(root.Position, flat)
-		end
-	end
 end
 
 local function restoreCamera(camera)
+	state.cameraDistance = nil
 	if state.savedCameraType ~= nil then
 		camera.CameraType = state.savedCameraType
 		state.savedCameraType = nil
@@ -835,14 +1080,16 @@ local function updateEsp(camera)
 		if root ~= nil and theirRoot ~= nil then
 			distanceText = string.format("  %d", (theirRoot.Position - root.Position).Magnitude)
 		end
-		if side == "enemy" and humanoid.MaxHealth > 0 then
-			visual.label.Text = string.format("%s  %d%s", player.DisplayName, math.floor(humanoid.Health + 0.5), distanceText)
-		else
-			visual.label.Text = player.DisplayName .. distanceText
-		end
+		local health = math.floor(humanoid.Health + 0.5)
+		visual.label.Text = player.DisplayName .. distanceText
+		visual.healthLabel.Text = string.format("%d HP", health)
 		local color = if side == "ally" then ALLY_COLOR else ENEMY_COLOR
+		visual.label.TextColor3 = color
+		visual.healthLabel.TextColor3 = color
 		visual.highlight.FillColor = color
 		visual.highlight.OutlineColor = color
+		visual.highlight.FillTransparency = 0.72
+		visual.highlight.OutlineTransparency = 0
 	end
 end
 
@@ -851,7 +1098,8 @@ local function updateTracers(camera)
 	if modules.tracers.enabled then
 		local from = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y - 8)
 		for _, player in Players:GetPlayers() do
-			if sideOf(player) ~= "enemy" then
+			local side = sideOf(player)
+			if side == nil or (side == "ally" and not modules.allyEsp.enabled) then
 				continue
 			end
 			local character = characterOf(player)
@@ -877,6 +1125,7 @@ local function updateTracers(camera)
 			local to = Vector2.new(point.X, point.Y)
 			local delta = to - from
 			frame.Visible = true
+			frame.BackgroundColor3 = if side == "ally" then ALLY_COLOR else ENEMY_COLOR
 			frame.Position = UDim2.fromOffset((from.X + to.X) / 2, (from.Y + to.Y) / 2)
 			frame.Size = UDim2.fromOffset(math.max(delta.Magnitude, 1), 2)
 			frame.Rotation = math.deg(math.atan2(delta.Y, delta.X))
@@ -886,6 +1135,8 @@ local function updateTracers(camera)
 		tracerFrames[index].Visible = false
 	end
 end
+
+local swingKillaura
 
 local function onStep()
 	local camera = workspace.CurrentCamera
@@ -923,6 +1174,60 @@ local function onStep()
 
 	updateEsp(camera)
 	updateTracers(camera)
+	if not state.menuOpen then
+		swingKillaura()
+	end
+end
+
+function swingKillaura()
+	if not modules.killaura.enabled or os.clock() < state.nextSwing then
+		return
+	end
+	local character = localPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if character == nil or root == nil then
+		return
+	end
+
+	local range = modules.killaura.value
+	local targetRoot = nil
+	for _, player in Players:GetPlayers() do
+		if sideOf(player) ~= "enemy" then
+			continue
+		end
+		local theirCharacter = characterOf(player)
+		local theirRoot = theirCharacter and theirCharacter:FindFirstChild("HumanoidRootPart")
+		local humanoid = theirCharacter and theirCharacter:FindFirstChildOfClass("Humanoid")
+		if theirRoot == nil or humanoid == nil or humanoid.Health <= 0 then
+			continue
+		end
+		if (theirRoot.Position - root.Position).Magnitude <= range then
+			targetRoot = theirRoot
+			break
+		end
+	end
+	if targetRoot == nil then
+		return
+	end
+
+	local tool = character:FindFirstChildOfClass("Tool")
+	if tool ~= nil then
+		pcall(function()
+			tool:Activate()
+		end)
+		if typeof(firetouchinterest) == "function" then
+			for _, part in tool:GetDescendants() do
+				if part:IsA("BasePart") then
+					pcall(firetouchinterest, part, targetRoot, 0)
+					pcall(firetouchinterest, part, targetRoot, 1)
+				end
+			end
+		end
+	end
+	if typeof(mouse1click) == "function" then
+		pcall(mouse1click)
+	end
+	state.nextSwing = os.clock() + 0.15
 end
 
 local function unload()
@@ -953,6 +1258,7 @@ local function toggleModule(module)
 	if module == modules.esp or module == modules.allyEsp then
 		refreshEsp()
 	end
+	notify(module)
 	if state.menuOpen then
 		renderPage()
 	else
@@ -994,7 +1300,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 	end
 
 	state.holding[input.KeyCode] = true
-	if gameProcessed or state.menuOpen then
+	if gameProcessed then
 		return
 	end
 	for _, module in modules do
