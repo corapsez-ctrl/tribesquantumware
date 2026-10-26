@@ -1,8 +1,6 @@
 -- QuantumWare for Tribes 3v3.
 -- After it runs, Right Shift opens and closes the menu.
--- Optional raw link so the next join can download this file again:
--- getgenv().QuantumWareSourceUrl = "https://raw.githubusercontent.com/YOU/REPO/main/quantumware.luau"
-local SOURCE_URL = ""
+local SOURCE_URL = "https://raw.githubusercontent.com/corapsez-ctrl/tribesquantumware/main/quantumware.luau"
 
 if typeof(getgenv) == "function" and type(getgenv().QuantumWareUnload) == "function" then
 	pcall(getgenv().QuantumWareUnload)
