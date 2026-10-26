@@ -143,6 +143,24 @@ local modules = {
 			{ field = "circleColor", name = "Circle colour", kind = "color" },
 		},
 	},
+	trigger = {
+		page = "Closet",
+		name = "Triggerbot",
+		desc = "Clicks when an enemy is inside the crosshair",
+		key = Enum.KeyCode.B,
+		enabled = false,
+		fov = 30,
+		min = 8,
+		max = 140,
+		step = 4,
+		showCircle = true,
+		circleColor = PURPLE,
+		options = {
+			{ field = "fov", name = "FOV", kind = "number" },
+			{ field = "showCircle", name = "FOV circle", kind = "bool" },
+			{ field = "circleColor", name = "Circle colour", kind = "color" },
+		},
+	},
 	esp = {
 		page = "Visuals",
 		name = "ESP",
@@ -174,16 +192,14 @@ local modules = {
 	rage = {
 		page = "Rage",
 		name = "Underkill",
-		desc = "Hides far away, then strikes with the weapon you pick",
+		desc = "Hides in the sky, then drops under an enemy and spams the dagger",
 		key = Enum.KeyCode.V,
 		enabled = false,
 		hide = 2,
 		attack = 0.5,
-		method = "Sword",
 		options = {
 			{ field = "hide", name = "Hide", kind = "number", min = 1, max = 5, step = 0.25 },
 			{ field = "attack", name = "Attack", kind = "number", min = 0.35, max = 1, step = 0.05 },
-			{ field = "method", name = "Method", kind = "choice", choices = { "Sword", "Dagger", "Hammer", "Ranged" } },
 		},
 	},
 }
@@ -191,7 +207,7 @@ local modules = {
 local pageOrder = {
 	Blatant = { "aimbot", "silent", "killaura", "fly", "speed", "jump" },
 	Rage = { "rage" },
-	Closet = { "smooth" },
+	Closet = { "smooth", "trigger" },
 	Visuals = { "esp", "allyEsp", "tracers", "watermark" },
 }
 
@@ -547,7 +563,7 @@ local CIRCLE_COLORS = {
 }
 
 local fovCircles = {}
-for _, id in { "aimbot", "silent", "smooth" } do
+for _, id in { "aimbot", "silent", "smooth", "trigger" } do
 	local frame = Instance.new("Frame")
 	frame.Name = "Fov" .. id
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1470,6 +1486,7 @@ end
 
 local swingKillaura
 local applyRage
+local clickSwing
 
 local function onStep()
 	local camera = workspace.CurrentCamera
@@ -1512,7 +1529,7 @@ local function onStep()
 		restoreCamera(camera)
 	end
 
-	for _, id in { "aimbot", "silent", "smooth" } do
+	for _, id in { "aimbot", "silent", "smooth", "trigger" } do
 		local module = modules[id]
 		local stroke = fovCircles[id]
 		local show = module.enabled and module.showCircle ~= false and not state.menuOpen and module.fov ~= nil
@@ -1530,6 +1547,13 @@ local function onStep()
 	updateTracers(camera)
 	if not state.menuOpen then
 		swingKillaura()
+		if modules.trigger.enabled then
+			local target = closestEnemy(camera, modules.trigger.fov, false, true)
+			if target ~= nil and os.clock() >= (state.nextTrigger or 0) then
+				clickSwing()
+				state.nextTrigger = os.clock() + 0.15
+			end
+		end
 	end
 	applyRage()
 end
@@ -1726,7 +1750,7 @@ local function swingParts(character, tool, words)
 	return parts
 end
 
-local function clickSwing()
+function clickSwing()
 	local camera = workspace.CurrentCamera
 	if camera == nil then
 		return
@@ -1847,8 +1871,7 @@ end
 
 local function pickHideSpot(around)
 	local angle = math.random() * math.pi * 2
-	local height = math.max(around.Y + 300, 500)
-	return Vector3.new(around.X + math.cos(angle) * 1000, height, around.Z + math.sin(angle) * 1000)
+	return Vector3.new(around.X + math.cos(angle) * 10000, around.Y + 700, around.Z + math.sin(angle) * 10000)
 end
 
 local function setRageStatus(text)
@@ -1967,22 +1990,11 @@ local function clearRageView(character)
 	destroyRageVisual()
 	if character ~= nil then
 		hideRealCharacter(character, false)
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid ~= nil and state.rageStood then
-			humanoid.PlatformStand = state.ragePlatform == true
-		end
 	end
-	state.rageStood = false
 	local camera = workspace.CurrentCamera
 	if camera ~= nil then
 		restoreCamera(camera)
 	end
-end
-
-local function placeBody(root, cf)
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-	root.CFrame = cf
 end
 
 function applyRage()
@@ -2033,7 +2045,6 @@ function applyRage()
 		state.rageHidePos = pickHideSpot(root.Position)
 		state.rageTarget = nearestEnemy(root.Position)
 		state.rageNextHit = 0
-		state.rageNextShot = 0
 	end
 
 	if livingEnemyRoot(state.rageTarget) == nil then
@@ -2045,102 +2056,39 @@ function applyRage()
 	local now = os.clock()
 	local hideTime = math.clamp(modules.rage.hide or 2, 1, 5)
 	local attackTime = math.clamp(modules.rage.attack or 0.5, 0.35, 1)
-	local method = modules.rage.method or "Sword"
-	local words = WEAPON_WORDS[method] or SWORD_WORDS
-
-	if state.menuOpen then
-		state.rageUntil = math.max(state.rageUntil, now + 0.05)
-		if state.rageHidePos == nil then
-			state.rageHidePos = pickHideSpot(if targetRoot then targetRoot.Position else root.Position)
-		end
-		placeBody(root, CFrame.new(state.rageHidePos))
-		setRageStatus("status: void")
-		showSpawnView(character)
-		return
-	end
+	local around = if targetRoot then targetRoot.Position else root.Position
 
 	if now >= state.rageUntil then
-		if state.ragePhase ~= "attack" then
+		if state.ragePhase ~= "attack" or targetRoot == nil then
 			state.ragePhase = "attack"
 			state.rageUntil = now + attackTime
 			state.rageNextHit = 0
-			state.rageNextShot = 0
 		else
-			if state.rageHolding then
-				state.rageHolding = false
-				releaseMouse()
-			end
 			state.ragePhase = "hide"
 			state.rageUntil = now + hideTime
-			local around = if targetRoot then targetRoot.Position else root.Position
 			state.rageHidePos = pickHideSpot(around)
 		end
 	end
 
 	if state.ragePhase ~= "attack" or targetRoot == nil then
 		if state.rageHidePos == nil then
-			state.rageHidePos = pickHideSpot(if targetRoot then targetRoot.Position else root.Position)
+			state.rageHidePos = pickHideSpot(around)
 		end
 		placeBody(root, CFrame.new(state.rageHidePos))
-		if now >= (state.rageGuideUntil or 0) then
-			state.rageSilent = false
-			state.silentPoint = nil
-		end
+		state.rageSilent = false
+		state.silentPoint = nil
 		setRageStatus("status: void")
-		showSpawnView(character)
 		return
 	end
 
-	if method == "Ranged" then
-		local aimPart = aimPartOf(targetRoot.Parent) or targetRoot
-		local above = targetRoot.Position + Vector3.new(0, 10, 0)
-		local focus = leadPoint(above, aimPart)
-		placeBody(root, CFrame.lookAt(above, focus))
-		state.rageShootFrom = above
-		state.silentPoint = focus
-		state.silentTarget = aimPart
-		state.rageSilent = true
-		state.rageGuideUntil = math.max(state.rageGuideUntil or 0, now + 1)
-		local camera = workspace.CurrentCamera
-		if camera ~= nil then
-			ownCamera(camera)
-			camera.CFrame = CFrame.lookAt(above + Vector3.new(0, 2.2, 0), focus)
-		end
-		local tool = equipWeapon(character, words)
-		if now >= (state.rageNextShot or 0) then
-			if tool ~= nil then
-				pcall(function()
-					tool:Activate()
-				end)
-			end
-			clickSwing()
-			state.rageNextShot = now + 0.18
-			task.delay(0.08, function()
-				for _, child in workspace:GetChildren() do
-					if child:IsA("BasePart") then
-						guideBolt(child)
-					elseif child:IsA("Model") then
-						local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
-						if primary ~= nil then
-							guideBolt(primary)
-						end
-					end
-				end
-			end)
-		end
-		setRageStatus("status: attacking")
-		showSpawnView(character)
-	else
-		state.rageSilent = false
-		state.silentPoint = nil
-		placeBody(root, CFrame.new(targetRoot.Position - Vector3.new(0, 2.5, 0)))
-		if now >= (state.rageNextHit or 0) then
-			hitCharacter(character, targetRoot.Parent, words)
-			state.rageNextHit = now + 0.15
-		end
-		setRageStatus("status: attacking")
-		showSpawnView(character)
+	placeBody(root, CFrame.new(targetRoot.Position - Vector3.new(0, 2.5, 0)))
+	state.rageSilent = false
+	state.silentPoint = nil
+	if now >= (state.rageNextHit or 0) then
+		hitCharacter(character, targetRoot.Parent, WEAPON_WORDS.Dagger)
+		state.rageNextHit = now + 0.12
 	end
+	setRageStatus("status: attacking")
 end
 
 local function unload()
@@ -2171,7 +2119,6 @@ local function unload()
 	end
 	gui:Destroy()
 end
-
 if typeof(getgenv) == "function" then
 	getgenv().QuantumWareUnload = unload
 end
@@ -2382,11 +2329,16 @@ local function installSilentAim()
 		if goal == nil then
 			return oldNamecall(self, ...)
 		end
-		local origin = ...
-		if typeof(origin) ~= "Vector3" then
+		local args = { ... }
+		local origin = args[1]
+		local direction = args[castIndex]
+		if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" or direction.Magnitude < 80 then
 			return oldNamecall(self, ...)
 		end
-		local args = { ... }
+		local camera = workspace.CurrentCamera
+		if camera ~= nil and direction.Unit:Dot(camera.CFrame.LookVector) < 0.65 then
+			return oldNamecall(self, ...)
+		end
 		args[castIndex] = goal - origin
 		return oldNamecall(self, unpack(args))
 	end)
