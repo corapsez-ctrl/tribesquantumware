@@ -1656,7 +1656,7 @@ local function guideBolt(part)
 	end
 	local blob = string.lower(part.Name .. " " .. (if part.Parent then part.Parent.Name else ""))
 	local named = matchesWords(blob, BOLT_WORDS)
-	if not named and not (fromDistance < 20 and part.Size.Magnitude < 8) then
+	if not named then
 		return
 	end
 	guidedBolts[part] = true
@@ -1847,7 +1847,8 @@ end
 
 local function pickHideSpot(around)
 	local angle = math.random() * math.pi * 2
-	return around + Vector3.new(math.cos(angle) * 1000, 50 + math.random(0, 40), math.sin(angle) * 1000)
+	local height = math.max(around.Y + 300, 500)
+	return Vector3.new(around.X + math.cos(angle) * 1000, height, around.Z + math.sin(angle) * 1000)
 end
 
 local function setRageStatus(text)
@@ -1966,11 +1967,22 @@ local function clearRageView(character)
 	destroyRageVisual()
 	if character ~= nil then
 		hideRealCharacter(character, false)
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid ~= nil and state.rageStood then
+			humanoid.PlatformStand = state.ragePlatform == true
+		end
 	end
+	state.rageStood = false
 	local camera = workspace.CurrentCamera
 	if camera ~= nil then
 		restoreCamera(camera)
 	end
+end
+
+local function placeBody(root, cf)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	root.CFrame = cf
 end
 
 function applyRage()
@@ -1986,7 +1998,9 @@ function applyRage()
 			state.rageActive = false
 			state.rageTarget = nil
 			state.rageSilent = false
+			state.silentPoint = nil
 			state.rageHidePos = nil
+			state.rageGuideUntil = 0
 			state.rageReleaseUntil = os.clock() + 0.3
 			clearRageView(character)
 		end
@@ -2002,76 +2016,75 @@ function applyRage()
 		return
 	end
 
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid ~= nil and not state.rageStood then
+		state.ragePlatform = humanoid.PlatformStand
+		state.rageStood = true
+	end
+	if humanoid ~= nil then
+		humanoid.PlatformStand = true
+	end
+
 	if not state.rageActive then
 		state.rageActive = true
 		state.rageReturn = root.CFrame
 		state.ragePhase = "hide"
 		state.rageUntil = os.clock() + math.clamp(modules.rage.hide or 2, 1, 5)
-		state.rageSwung = false
 		state.rageHidePos = pickHideSpot(root.Position)
 		state.rageTarget = nearestEnemy(root.Position)
+		state.rageNextHit = 0
+		state.rageNextShot = 0
 	end
 
 	if livingEnemyRoot(state.rageTarget) == nil then
 		local origin = if state.rageReturn then state.rageReturn.Position else root.Position
 		state.rageTarget = nearestEnemy(origin)
-		if state.ragePhase ~= "hide" then
-			state.ragePhase = "hide"
-			state.rageUntil = os.clock() + math.clamp(modules.rage.hide or 2, 1, 5)
-			state.rageHidePos = pickHideSpot(origin)
-		end
-		state.rageSwung = false
 	end
 
 	local targetRoot = livingEnemyRoot(state.rageTarget)
-	root.AssemblyLinearVelocity = Vector3.zero
-	if targetRoot == nil then
-		if state.rageHidePos ~= nil then
-			root.CFrame = CFrame.new(state.rageHidePos)
-		end
-		if os.clock() >= (state.rageGuideUntil or 0) then
-			state.rageSilent = false
-		end
-		setRageStatus("status: void")
-		showSpawnView(character)
-		return
-	end
-
-	if state.menuOpen then
-		if state.rageHidePos == nil then
-			state.rageHidePos = pickHideSpot(targetRoot.Position)
-		end
-		root.CFrame = CFrame.new(state.rageHidePos)
-		if os.clock() >= (state.rageGuideUntil or 0) then
-			state.rageSilent = false
-		end
-		setRageStatus("status: void")
-		showSpawnView(character)
-		return
-	end
-
 	local now = os.clock()
 	local hideTime = math.clamp(modules.rage.hide or 2, 1, 5)
 	local attackTime = math.clamp(modules.rage.attack or 0.5, 0.35, 1)
 	local method = modules.rage.method or "Sword"
 	local words = WEAPON_WORDS[method] or SWORD_WORDS
-	local leavingAttack = state.ragePhase == "attack" and now >= state.rageUntil
 
-	if state.ragePhase == "hide" and now >= state.rageUntil then
-		state.ragePhase = "attack"
-		state.rageUntil = now + attackTime
-		state.rageSwung = false
-		state.rageNextHit = 0
-		leavingAttack = false
+	if state.menuOpen then
+		state.rageUntil = math.max(state.rageUntil, now + 0.05)
+		if state.rageHidePos == nil then
+			state.rageHidePos = pickHideSpot(if targetRoot then targetRoot.Position else root.Position)
+		end
+		placeBody(root, CFrame.new(state.rageHidePos))
+		setRageStatus("status: void")
+		showSpawnView(character)
+		return
 	end
 
-	if state.ragePhase == "hide" then
-		if state.rageHidePos == nil then
-			state.rageHidePos = pickHideSpot(targetRoot.Position)
+	if now >= state.rageUntil then
+		if state.ragePhase ~= "attack" then
+			state.ragePhase = "attack"
+			state.rageUntil = now + attackTime
+			state.rageNextHit = 0
+			state.rageNextShot = 0
+		else
+			if state.rageHolding then
+				state.rageHolding = false
+				releaseMouse()
+			end
+			state.ragePhase = "hide"
+			state.rageUntil = now + hideTime
+			local around = if targetRoot then targetRoot.Position else root.Position
+			state.rageHidePos = pickHideSpot(around)
 		end
-		root.CFrame = CFrame.new(state.rageHidePos)
-		if os.clock() >= (state.rageGuideUntil or 0) then
+	end
+
+	if state.ragePhase ~= "attack" or targetRoot == nil then
+		if state.rageHidePos == nil then
+			state.rageHidePos = pickHideSpot(if targetRoot then targetRoot.Position else root.Position)
+		end
+		placeBody(root, CFrame.new(state.rageHidePos))
+		if now >= (state.rageGuideUntil or 0) then
 			state.rageSilent = false
+			state.silentPoint = nil
 		end
 		setRageStatus("status: void")
 		showSpawnView(character)
@@ -2082,27 +2095,26 @@ function applyRage()
 		local aimPart = aimPartOf(targetRoot.Parent) or targetRoot
 		local above = targetRoot.Position + Vector3.new(0, 10, 0)
 		local focus = leadPoint(above, aimPart)
-		root.CFrame = CFrame.lookAt(above, focus)
-		root.AssemblyLinearVelocity = Vector3.zero
+		placeBody(root, CFrame.lookAt(above, focus))
+		state.rageShootFrom = above
+		state.silentPoint = focus
+		state.silentTarget = aimPart
+		state.rageSilent = true
+		state.rageGuideUntil = math.max(state.rageGuideUntil or 0, now + 1)
 		local camera = workspace.CurrentCamera
 		if camera ~= nil then
 			ownCamera(camera)
 			camera.CFrame = CFrame.lookAt(above + Vector3.new(0, 2.2, 0), focus)
 		end
-		state.rageShootFrom = above
-		state.silentPoint = focus
-		state.silentTarget = aimPart
-		state.rageSilent = true
-		state.rageGuideUntil = math.max(state.rageGuideUntil or 0, now + attackTime + 0.8)
 		local tool = equipWeapon(character, words)
-		if os.clock() >= (state.rageNextShot or 0) then
+		if now >= (state.rageNextShot or 0) then
 			if tool ~= nil then
 				pcall(function()
 					tool:Activate()
 				end)
 			end
 			clickSwing()
-			state.rageNextShot = os.clock() + 0.18
+			state.rageNextShot = now + 0.18
 			task.delay(0.08, function()
 				for _, child in workspace:GetChildren() do
 					if child:IsA("BasePart") then
@@ -2116,30 +2128,17 @@ function applyRage()
 				end
 			end)
 		end
-		if leavingAttack then
-			if state.rageHolding then
-				state.rageHolding = false
-				releaseMouse()
-			end
-			state.ragePhase = "hide"
-			state.rageUntil = now + hideTime
-			state.rageHidePos = pickHideSpot(targetRoot.Position)
-		end
-		setRageStatus(if state.ragePhase == "attack" then "status: attacking" else "status: void")
+		setRageStatus("status: attacking")
 		showSpawnView(character)
 	else
 		state.rageSilent = false
-		root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
-		if os.clock() >= (state.rageNextHit or 0) then
+		state.silentPoint = nil
+		placeBody(root, CFrame.new(targetRoot.Position - Vector3.new(0, 2.5, 0)))
+		if now >= (state.rageNextHit or 0) then
 			hitCharacter(character, targetRoot.Parent, words)
-			state.rageNextHit = os.clock() + 0.15
+			state.rageNextHit = now + 0.15
 		end
-		if leavingAttack then
-			state.ragePhase = "hide"
-			state.rageUntil = now + hideTime
-			state.rageHidePos = pickHideSpot(targetRoot.Position)
-		end
-		setRageStatus(if state.ragePhase == "attack" then "status: attacking" else "status: void")
+		setRageStatus("status: attacking")
 		showSpawnView(character)
 	end
 end
