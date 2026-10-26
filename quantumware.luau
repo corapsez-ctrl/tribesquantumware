@@ -1,5 +1,12 @@
 -- QuantumWare for Tribes 3v3.
 -- After it runs, Right Shift opens and closes the menu.
+-- Optional raw link so the next join can download this file again:
+-- getgenv().QuantumWareSourceUrl = "https://raw.githubusercontent.com/YOU/REPO/main/quantumware.luau"
+local SOURCE_URL = ""
+
+if typeof(getgenv) == "function" and type(getgenv().QuantumWareUnload) == "function" then
+	pcall(getgenv().QuantumWareUnload)
+end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -24,7 +31,7 @@ local LOBBY_TEAMS = {
 	intermission = true,
 }
 
-local PAGES = { "Blatant", "Closet", "Visuals", "Settings" }
+local PAGES = { "Blatant", "Rage", "Closet", "Visuals", "Settings" }
 
 local modules = {
 	aimbot = {
@@ -63,13 +70,35 @@ local modules = {
 	killaura = {
 		page = "Blatant",
 		name = "Killaura",
-		desc = "Swings at enemies in range, including through walls",
+		desc = "Swings your sword at enemies in range, through walls",
 		key = Enum.KeyCode.X,
 		enabled = false,
-		value = 18,
-		min = 8,
-		max = 40,
+		value = 36,
+		min = 12,
+		max = 80,
 		step = 2,
+	},
+	silent = {
+		page = "Blatant",
+		name = "Silent Aim",
+		desc = "Redirects shots at an enemy in view without moving the camera",
+		key = Enum.KeyCode.R,
+		enabled = false,
+		fov = 220,
+		min = 40,
+		max = 600,
+		step = 20,
+	},
+	fly = {
+		page = "Blatant",
+		name = "Fly",
+		desc = "Fly with WASD, Space, and Ctrl",
+		key = Enum.KeyCode.F,
+		enabled = false,
+		value = 60,
+		min = 20,
+		max = 160,
+		step = 5,
 	},
 	smooth = {
 		page = "Closet",
@@ -111,10 +140,18 @@ local modules = {
 		key = Enum.KeyCode.H,
 		enabled = true,
 	},
+	rage = {
+		page = "Rage",
+		name = "Underkill",
+		desc = "Teleports under an enemy and swings your sword",
+		key = Enum.KeyCode.V,
+		enabled = false,
+	},
 }
 
 local pageOrder = {
-	Blatant = { "aimbot", "killaura", "speed", "jump" },
+	Blatant = { "aimbot", "silent", "killaura", "fly", "speed", "jump" },
+	Rage = { "rage" },
 	Closet = { "smooth" },
 	Visuals = { "esp", "allyEsp", "tracers", "watermark" },
 }
@@ -132,6 +169,11 @@ local state = {
 	cameraDistance = nil,
 	jumpUntil = 0,
 	nextSwing = 0,
+	autoload = true,
+	sourceUrl = "",
+	silentTarget = nil,
+	internalRay = false,
+	wasFlying = false,
 }
 
 local visuals = {}
@@ -396,13 +438,16 @@ watermark.Parent = gui
 
 local popups = Instance.new("Frame")
 popups.Name = "Popups"
+popups.AnchorPoint = Vector2.new(1, 1)
 popups.BackgroundTransparency = 1
-popups.Position = UDim2.fromOffset(16, 42)
-popups.Size = UDim2.fromOffset(240, 240)
+popups.Position = UDim2.new(1, -16, 1, -16)
+popups.Size = UDim2.fromOffset(220, 280)
 popups.Parent = gui
 local popupLayout = Instance.new("UIListLayout")
 popupLayout.Padding = UDim.new(0, 6)
 popupLayout.SortOrder = Enum.SortOrder.LayoutOrder
+popupLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+popupLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 popupLayout.Parent = popups
 
 local function notify(module)
@@ -553,6 +598,8 @@ local function label(parent, text, size, color, fontSize, xAlign)
 	return item
 end
 
+local saveSettings
+
 local function renderPage()
 	watermark.Visible = modules.watermark.enabled
 	if state.binding == "menu" then
@@ -627,6 +674,38 @@ local function renderPage()
 			renderPage()
 		end)
 
+		local autoRow = Instance.new("Frame")
+		autoRow.Size = UDim2.new(1, 0, 0, 64)
+		autoRow.BackgroundColor3 = ROW
+		autoRow.BorderSizePixel = 0
+		autoRow.Parent = content
+		corner(autoRow, 12)
+		label(autoRow, "Autoload", UDim2.fromOffset(220, 28), Color3.new(1, 1, 1), 15).Position = UDim2.fromOffset(14, 8)
+		label(autoRow, "Run QuantumWare again the next time you join", UDim2.fromOffset(280, 18), MUTED, 12).Position = UDim2.fromOffset(14, 34)
+
+		local autoToggle = Instance.new("TextButton")
+		autoToggle.AnchorPoint = Vector2.new(1, 0.5)
+		autoToggle.Position = UDim2.new(1, -14, 0.5, 0)
+		autoToggle.Size = UDim2.fromOffset(44, 24)
+		autoToggle.BackgroundColor3 = if state.autoload then PURPLE else Color3.fromRGB(40, 40, 46)
+		autoToggle.BorderSizePixel = 0
+		autoToggle.AutoButtonColor = false
+		autoToggle.Text = ""
+		autoToggle.Parent = autoRow
+		corner(autoToggle, 12)
+		local autoKnob = Instance.new("Frame")
+		autoKnob.Size = UDim2.fromOffset(16, 16)
+		autoKnob.Position = if state.autoload then UDim2.fromOffset(24, 4) else UDim2.fromOffset(4, 4)
+		autoKnob.BackgroundColor3 = Color3.new(1, 1, 1)
+		autoKnob.BorderSizePixel = 0
+		autoKnob.Parent = autoToggle
+		corner(autoKnob, 8)
+		autoToggle.MouseButton1Click:Connect(function()
+			state.autoload = not state.autoload
+			saveSettings()
+			renderPage()
+		end)
+
 		local unload = Instance.new("TextButton")
 		unload.Size = UDim2.new(1, 0, 0, 40)
 		unload.BackgroundColor3 = ROW
@@ -682,6 +761,7 @@ local function renderPage()
 				refreshEsp()
 			end
 			notify(module)
+			saveSettings()
 			renderPage()
 		end)
 
@@ -721,6 +801,7 @@ local function renderPage()
 				else
 					module.value = nextValue
 				end
+				saveSettings()
 				renderPage()
 			end
 
@@ -893,7 +974,28 @@ local function currentFov()
 	if modules.smooth.enabled then
 		fov = math.max(fov, modules.smooth.fov)
 	end
+	if modules.silent.enabled then
+		fov = math.max(fov, modules.silent.fov)
+	end
 	return fov
+end
+
+local function canSee(camera, part)
+	local origin = camera.CFrame.Position
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ignore = {}
+	if localPlayer.Character ~= nil then
+		table.insert(ignore, localPlayer.Character)
+	end
+	if part.Parent ~= nil then
+		table.insert(ignore, part.Parent)
+	end
+	params.FilterDescendantsInstances = ignore
+	state.internalRay = true
+	local hit = workspace:Raycast(origin, part.Position - origin, params)
+	state.internalRay = false
+	return hit == nil
 end
 
 local function predictedPoint(camera, part)
@@ -919,7 +1021,7 @@ local function predictedPoint(camera, part)
 	return predicted + Vector3.new(0, drop, 0)
 end
 
-local function closestEnemy(camera, fov, lockOffscreen)
+local function closestEnemy(camera, fov, lockOffscreen, requireSight)
 	local center = camera.ViewportSize / 2
 	local bestPart = nil
 	local bestScore = math.huge
@@ -948,7 +1050,7 @@ local function closestEnemy(camera, fov, lockOffscreen)
 			continue
 		end
 		local pixels = (Vector2.new(point.X, point.Y) - center).Magnitude
-		if pixels <= fov and pixels < bestScore then
+		if pixels <= fov and pixels < bestScore and (not requireSight or canSee(camera, part)) then
 			bestScore = pixels
 			bestPart = part
 		end
@@ -1013,6 +1115,42 @@ local function applyMovement()
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	if humanoid == nil or root == nil then
 		return
+	end
+
+	if modules.fly.enabled then
+		state.wasFlying = true
+		humanoid.PlatformStand = true
+		local camera = workspace.CurrentCamera
+		local direction = Vector3.zero
+		if camera ~= nil then
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+				direction += camera.CFrame.LookVector
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+				direction -= camera.CFrame.LookVector
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+				direction -= camera.CFrame.RightVector
+			end
+			if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+				direction += camera.CFrame.RightVector
+			end
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			direction += Vector3.yAxis
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+			direction -= Vector3.yAxis
+		end
+		if direction.Magnitude > 0.05 then
+			root.AssemblyLinearVelocity = direction.Unit * modules.fly.value
+		else
+			root.AssemblyLinearVelocity = Vector3.zero
+		end
+		return
+	elseif state.wasFlying then
+		state.wasFlying = false
+		humanoid.PlatformStand = false
 	end
 
 	if modules.speed.enabled then
@@ -1137,6 +1275,7 @@ local function updateTracers(camera)
 end
 
 local swingKillaura
+local applyRage
 
 local function onStep()
 	local camera = workspace.CurrentCamera
@@ -1149,20 +1288,27 @@ local function onStep()
 	local aiming = false
 	if not state.menuOpen then
 		if modules.aimbot.enabled then
-			local target = closestEnemy(camera, modules.aimbot.fov, true)
+			local target = closestEnemy(camera, modules.aimbot.fov, false, true)
 			if target then
 				aiming = true
 				ownCamera(camera)
 				aimAt(camera, target, 1)
 			end
 		elseif modules.smooth.enabled and state.holding[modules.smooth.key] then
-			local target = closestEnemy(camera, modules.smooth.fov, false)
+			local target = closestEnemy(camera, modules.smooth.fov, false, true)
 			if target then
 				aiming = true
 				ownCamera(camera)
 				aimAt(camera, target, 0.22)
 			end
 		end
+		if modules.silent.enabled then
+			state.silentTarget = closestEnemy(camera, modules.silent.fov, false, true)
+		else
+			state.silentTarget = nil
+		end
+	else
+		state.silentTarget = nil
 	end
 	if not aiming then
 		restoreCamera(camera)
@@ -1176,6 +1322,110 @@ local function onStep()
 	updateTracers(camera)
 	if not state.menuOpen then
 		swingKillaura()
+		applyRage()
+	end
+end
+
+local function isSwordName(name)
+	local lowered = string.lower(name)
+	return string.find(lowered, "sword", 1, true) ~= nil
+		or string.find(lowered, "blade", 1, true) ~= nil
+		or string.find(lowered, "melee", 1, true) ~= nil
+		or string.find(lowered, "hatchet", 1, true) ~= nil
+		or string.find(lowered, "katana", 1, true) ~= nil
+end
+
+local function equipSword(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local backpack = localPlayer:FindFirstChildOfClass("Backpack")
+	local held = character:FindFirstChildOfClass("Tool")
+	if held ~= nil and isSwordName(held.Name) then
+		return held
+	end
+	local containers = { character, backpack }
+	for _, container in containers do
+		if container == nil then
+			continue
+		end
+		for _, child in container:GetChildren() do
+			if child:IsA("Tool") and isSwordName(child.Name) then
+				if humanoid ~= nil and child.Parent ~= character then
+					humanoid:EquipTool(child)
+				end
+				return child
+			end
+		end
+	end
+	return held
+end
+
+local function swingParts(character, tool)
+	local parts = {}
+	local function collect(root)
+		if root == nil then
+			return
+		end
+		for _, part in root:GetDescendants() do
+			if part:IsA("BasePart") then
+				table.insert(parts, part)
+			end
+		end
+	end
+	collect(tool)
+	for _, part in character:GetDescendants() do
+		if part:IsA("BasePart") and isSwordName(part.Name) then
+			table.insert(parts, part)
+		end
+	end
+	if #parts == 0 then
+		local hand = character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm")
+		if hand ~= nil then
+			table.insert(parts, hand)
+		end
+	end
+	return parts
+end
+
+local function clickSwing()
+	local camera = workspace.CurrentCamera
+	if camera == nil then
+		return
+	end
+	local x = camera.ViewportSize.X / 2
+	local y = camera.ViewportSize.Y / 2
+	pcall(function()
+		game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, true, game, 0)
+		game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, false, game, 0)
+	end)
+	if typeof(mouse1press) == "function" then
+		pcall(mouse1press)
+	end
+	if typeof(mouse1release) == "function" then
+		pcall(mouse1release)
+	elseif typeof(mouse1click) == "function" then
+		pcall(mouse1click)
+	end
+end
+
+local function hitCharacter(character, enemyCharacter)
+	local tool = equipSword(character)
+	if tool ~= nil then
+		pcall(function()
+			tool:Activate()
+		end)
+	end
+	clickSwing()
+	if typeof(firetouchinterest) ~= "function" or enemyCharacter == nil then
+		return
+	end
+	local parts = swingParts(character, tool)
+	for _, enemyPart in enemyCharacter:GetDescendants() do
+		if enemyPart:IsA("BasePart") then
+			for _, part in parts do
+				pcall(firetouchinterest, part, enemyPart, 0)
+				pcall(firetouchinterest, part, enemyPart, 1)
+			end
+		end
 	end
 end
 
@@ -1190,7 +1440,7 @@ function swingKillaura()
 	end
 
 	local range = modules.killaura.value
-	local targetRoot = nil
+	local hitAny = false
 	for _, player in Players:GetPlayers() do
 		if sideOf(player) ~= "enemy" then
 			continue
@@ -1202,32 +1452,55 @@ function swingKillaura()
 			continue
 		end
 		if (theirRoot.Position - root.Position).Magnitude <= range then
+			hitCharacter(character, theirCharacter)
+			hitAny = true
+		end
+	end
+	if hitAny then
+		state.nextSwing = os.clock() + 0.12
+	end
+end
+
+function applyRage()
+	if not modules.rage.enabled then
+		return
+	end
+	local character = localPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if character == nil or root == nil then
+		return
+	end
+
+	local targetCharacter = nil
+	local targetRoot = nil
+	local closest = math.huge
+	for _, player in Players:GetPlayers() do
+		if sideOf(player) ~= "enemy" then
+			continue
+		end
+		local theirCharacter = characterOf(player)
+		local theirRoot = theirCharacter and theirCharacter:FindFirstChild("HumanoidRootPart")
+		local humanoid = theirCharacter and theirCharacter:FindFirstChildOfClass("Humanoid")
+		if theirRoot == nil or humanoid == nil or humanoid.Health <= 0 then
+			continue
+		end
+		local distance = (theirRoot.Position - root.Position).Magnitude
+		if distance < closest then
+			closest = distance
+			targetCharacter = theirCharacter
 			targetRoot = theirRoot
-			break
 		end
 	end
 	if targetRoot == nil then
 		return
 	end
 
-	local tool = character:FindFirstChildOfClass("Tool")
-	if tool ~= nil then
-		pcall(function()
-			tool:Activate()
-		end)
-		if typeof(firetouchinterest) == "function" then
-			for _, part in tool:GetDescendants() do
-				if part:IsA("BasePart") then
-					pcall(firetouchinterest, part, targetRoot, 0)
-					pcall(firetouchinterest, part, targetRoot, 1)
-				end
-			end
-		end
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.CFrame = CFrame.new(targetRoot.Position - Vector3.new(0, 3, 0))
+	if os.clock() >= state.nextSwing then
+		hitCharacter(character, targetCharacter)
+		state.nextSwing = os.clock() + 0.12
 	end
-	if typeof(mouse1click) == "function" then
-		pcall(mouse1click)
-	end
-	state.nextSwing = os.clock() + 0.15
 end
 
 local function unload()
@@ -1253,12 +1526,17 @@ local function unload()
 	gui:Destroy()
 end
 
+if typeof(getgenv) == "function" then
+	getgenv().QuantumWareUnload = unload
+end
+
 local function toggleModule(module)
 	module.enabled = not module.enabled
 	if module == modules.esp or module == modules.allyEsp then
 		refreshEsp()
 	end
 	notify(module)
+	saveSettings()
 	if state.menuOpen then
 		renderPage()
 	else
@@ -1286,6 +1564,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, ga
 			state.binding.key = input.KeyCode
 		end
 		state.binding = nil
+		saveSettings()
 		renderPage()
 		return
 	end
@@ -1384,7 +1663,204 @@ for _, inst in workspace:GetDescendants() do
 	end
 end
 
+local function installSilentAim()
+	if typeof(hookmetamethod) ~= "function" or typeof(getnamecallmethod) ~= "function" then
+		return
+	end
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+		local method = getnamecallmethod()
+		if state.internalRay or method ~= "Raycast" or self ~= workspace or not modules.silent.enabled then
+			return oldNamecall(self, ...)
+		end
+		local target = state.silentTarget
+		if target == nil or target.Parent == nil then
+			return oldNamecall(self, ...)
+		end
+		local origin = ...
+		if typeof(origin) ~= "Vector3" then
+			return oldNamecall(self, ...)
+		end
+		local args = { ... }
+		args[2] = target.Position - origin
+		return oldNamecall(self, unpack(args))
+	end)
+end
+
+local HttpService = game:GetService("HttpService")
+local SETTINGS_PATH = "QuantumWare/settings.json"
+local SCRIPT_PATH = "QuantumWare/main.luau"
+local AUTOEXEC_PATH = "autoexec/QuantumWare.lua"
+local autoloadQueued = false
+
+local function filesReady()
+	return typeof(writefile) == "function" and typeof(readfile) == "function" and typeof(isfile) == "function"
+end
+
+local function ensureSettingsFolder()
+	if typeof(makefolder) == "function" and (typeof(isfolder) ~= "function" or not isfolder("QuantumWare")) then
+		pcall(makefolder, "QuantumWare")
+	end
+end
+
+function saveSettings()
+	if not filesReady() then
+		return
+	end
+	ensureSettingsFolder()
+	local data = {
+		autoload = state.autoload ~= false,
+		menuKey = state.menuKey.Name,
+		sourceUrl = state.sourceUrl or "",
+		modules = {},
+	}
+	for id, module in modules do
+		data.modules[id] = {
+			enabled = module.enabled,
+			key = if module.key then module.key.Name else nil,
+			fov = module.fov,
+			value = module.value,
+		}
+	end
+	pcall(writefile, SETTINGS_PATH, HttpService:JSONEncode(data))
+
+	local loader = [[
+repeat task.wait() until game:IsLoaded()
+if typeof(isfile) ~= "function" or typeof(readfile) ~= "function" then
+	return
+end
+if not isfile("QuantumWare/settings.json") then
+	return
+end
+local HttpService = game:GetService("HttpService")
+local data = HttpService:JSONDecode(readfile("QuantumWare/settings.json"))
+if data.autoload == false then
+	return
+end
+local source
+if type(data.sourceUrl) == "string" and data.sourceUrl ~= "" then
+	local ok, body = pcall(function()
+		return game:HttpGet(data.sourceUrl)
+	end)
+	if ok then
+		source = body
+	end
+end
+if type(source) ~= "string" and isfile("QuantumWare/main.luau") then
+	source = readfile("QuantumWare/main.luau")
+end
+if type(source) == "string" and source ~= "" then
+	loadstring(source)()
+end
+]]
+	if state.autoload == false then
+		autoloadQueued = false
+		if typeof(delfile) == "function" then
+			pcall(delfile, AUTOEXEC_PATH)
+			pcall(delfile, "autoexecute/QuantumWare.lua")
+		end
+	else
+		pcall(writefile, AUTOEXEC_PATH, loader)
+		if typeof(isfolder) == "function" and isfolder("autoexecute") then
+			pcall(writefile, "autoexecute/QuantumWare.lua", loader)
+		end
+		if not autoloadQueued then
+			local queue = queue_on_teleport
+			if typeof(queue) ~= "function" and typeof(syn) == "table" then
+				queue = syn.queue_on_teleport
+			end
+			if typeof(queue) == "function" then
+				autoloadQueued = pcall(queue, loader)
+			end
+		end
+	end
+end
+
+local function rememberScriptCopy()
+	if not filesReady() then
+		return
+	end
+	ensureSettingsFolder()
+	if state.sourceUrl ~= "" and typeof(game.HttpGet) == "function" then
+		local ok, body = pcall(function()
+			return game:HttpGet(state.sourceUrl)
+		end)
+		if ok and type(body) == "string" and body ~= "" then
+			pcall(writefile, SCRIPT_PATH, body)
+			return
+		end
+	end
+	for _, path in { "quantumware.luau", "quantumware.lua", "QuantumWare.lua" } do
+		if isfile(path) then
+			local ok, body = pcall(readfile, path)
+			if ok and type(body) == "string" and body ~= "" then
+				pcall(writefile, SCRIPT_PATH, body)
+				return
+			end
+		end
+	end
+end
+
+local function loadSettings()
+	if typeof(getgenv) == "function" then
+		local env = getgenv()
+		if type(env.QuantumWareSourceUrl) == "string" and env.QuantumWareSourceUrl ~= "" then
+			state.sourceUrl = env.QuantumWareSourceUrl
+		end
+	end
+	if state.sourceUrl == "" and SOURCE_URL ~= "" then
+		state.sourceUrl = SOURCE_URL
+	end
+	if not filesReady() or not isfile(SETTINGS_PATH) then
+		rememberScriptCopy()
+		saveSettings()
+		return
+	end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(SETTINGS_PATH))
+	end)
+	if not ok or type(data) ~= "table" then
+		saveSettings()
+		return
+	end
+	if type(data.menuKey) == "string" and Enum.KeyCode[data.menuKey] ~= nil then
+		state.menuKey = Enum.KeyCode[data.menuKey]
+	end
+	if state.sourceUrl == "" and type(data.sourceUrl) == "string" then
+		state.sourceUrl = data.sourceUrl
+	end
+	if data.autoload ~= nil then
+		state.autoload = data.autoload
+	end
+	if type(data.modules) == "table" then
+		for id, saved in data.modules do
+			local module = modules[id]
+			if module ~= nil and type(saved) == "table" then
+				if saved.enabled ~= nil then
+					module.enabled = saved.enabled
+				end
+				if type(saved.key) == "string" and Enum.KeyCode[saved.key] ~= nil then
+					module.key = Enum.KeyCode[saved.key]
+				end
+				if type(saved.fov) == "number" then
+					module.fov = saved.fov
+				end
+				if type(saved.value) == "number" then
+					module.value = saved.value
+				end
+			end
+		end
+	end
+	rememberScriptCopy()
+	saveSettings()
+end
+
+loadSettings()
+if modules.esp.enabled then
+	refreshEsp()
+end
 renderPage()
+pcall(installSilentAim)
 RunService:BindToRenderStep("QuantumWare", Enum.RenderPriority.Last.Value, onStep)
 table.insert(connections, RunService.Heartbeat:Connect(onStep))
 pcall(function()
